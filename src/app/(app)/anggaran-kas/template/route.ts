@@ -29,12 +29,16 @@ export async function GET(req: NextRequest) {
   const planOf = new Map(plans.rows.map((p) => [p.budget_item_id, p]));
   const mine = items.filter((r) => r.pptkId === user.id && ["draft", "returned", undefined].includes(planOf.get(r.itemId)?.status));
 
-  const header = ["id_butir", "kode_sub_kegiatan", "kode_rekening", "uraian", "pagu", ...MONTHS];
+  const tw = req.nextUrl.searchParams.get("periode") === "tw";
+  const periods = tw ? ["tw1", "tw2", "tw3", "tw4"] : MONTHS;
+  const header = ["id_butir", "kode_sub_kegiatan", "kode_rekening", "sumber_dana", "uraian", "pagu", ...periods];
   const body = mine.map((r) => {
     const p = planOf.get(r.itemId);
-    return [r.itemId, r.subCode, r.accountCode, r.description || r.subName, r.pagu, ...MONTHS.map((_, i) => Number(p?.cash_budget_periods.find((x) => x.period_type === "month" && x.period_no === i + 1)?.amount ?? 0) || "")] as (string | number)[];
+    const m = MONTHS.map((_, i) => Number(p?.cash_budget_periods.find((x) => x.period_type === "month" && x.period_no === i + 1)?.amount ?? 0));
+    const vals = tw ? [0, 1, 2, 3].map((q) => Math.round((m[q * 3]! + m[q * 3 + 1]! + m[q * 3 + 2]!) * 100) / 100) : m;
+    return [r.itemId, r.subCode, r.accountCode, r.funding, r.description || r.subName, r.pagu, ...vals.map((v) => v || "")] as (string | number)[];
   });
   if (req.nextUrl.searchParams.get("format") === "csv") return new NextResponse(toCsv([header, ...body]), { headers: csvResponseHeaders("templat-anggaran-kas.csv") });
-  const buf = await buildXlsx([{ name: "Anggaran Kas", header, rows: body, widths: [38, 20, 18, 40, 16, ...Array(12).fill(14)], moneyCols: [4, ...Array.from({ length: 12 }, (_, i) => 5 + i)] }]);
+  const buf = await buildXlsx([{ name: "Anggaran Kas", header, rows: body, widths: [38, 20, 18, 16, 40, 16, ...Array(periods.length).fill(14)], moneyCols: [5, ...periods.map((_, i) => 6 + i)] }]);
   return new NextResponse(new Uint8Array(buf), { headers: xlsxHeaders("templat-anggaran-kas.xlsx") });
 }

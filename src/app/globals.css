@@ -37,6 +37,42 @@ nav, .overflow-x-auto { scrollbar-width: thin; scrollbar-color: rgba(100,116,139
   .table-base tbody tr:hover td { @apply bg-navy-50/60; }
 }
 
+/* ===== Animasi tampilan (murni CSS; dimatikan untuk reduced-motion & cetak) ===== */
+@keyframes row-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes grow-x { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes grow-y { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes ring-draw { from { stroke-dasharray: 0 var(--c); } to { stroke-dasharray: var(--len) var(--c); } }
+@keyframes pop-in { 0% { opacity: 0; transform: scale(.9); } 100% { opacity: 1; transform: none; } }
+@keyframes float-slow { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@keyframes shine { from { background-position: -200% 0; } to { background-position: 200% 0; } }
+
+.bar-grow { transform-origin: left center; animation: grow-x .9s cubic-bezier(.2,.7,.2,1) both; }
+.svg-bar { transform-box: fill-box; transform-origin: bottom; animation: grow-y .8s cubic-bezier(.2,.7,.2,1) both; }
+.ring-draw { animation: ring-draw 1.1s cubic-bezier(.2,.7,.2,1) both; }
+.pop-in { animation: pop-in .45s ease-out both; }
+.float-slow { animation: float-slow 6s ease-in-out infinite; }
+.card-lift { transition: transform .25s ease, box-shadow .25s ease; }
+.card-lift:hover { transform: translateY(-3px); box-shadow: 0 14px 34px -12px rgba(10,33,64,.35); }
+.shine { background-image: linear-gradient(110deg, transparent 30%, rgba(255,255,255,.35) 50%, transparent 70%); background-size: 200% 100%; animation: shine 3.5s linear infinite; }
+
+@layer components {
+  /* Baris tabel muncul bertahap; baris ke-25 dst. langsung tampil agar tabel panjang tidak lambat. */
+  .table-base tbody tr { animation: row-in .4s ease-out both; }
+  .table-base tbody tr:nth-child(1) { animation-delay: .00s; } .table-base tbody tr:nth-child(2) { animation-delay: .03s; }
+  .table-base tbody tr:nth-child(3) { animation-delay: .06s; } .table-base tbody tr:nth-child(4) { animation-delay: .09s; }
+  .table-base tbody tr:nth-child(5) { animation-delay: .12s; } .table-base tbody tr:nth-child(6) { animation-delay: .15s; }
+  .table-base tbody tr:nth-child(7) { animation-delay: .18s; } .table-base tbody tr:nth-child(8) { animation-delay: .21s; }
+  .table-base tbody tr:nth-child(9) { animation-delay: .24s; } .table-base tbody tr:nth-child(10) { animation-delay: .27s; }
+  .table-base tbody tr:nth-child(n+11):nth-child(-n+24) { animation-delay: .3s; }
+  .table-base tbody tr:nth-child(n+25) { animation: none; }
+  .table-base tbody tr td { transition: background-color .18s ease; }
+  .table-base tbody tr:hover td:first-child { box-shadow: inset 3px 0 0 #c29d4d; }
+  .table-base tfoot td { @apply bg-gold-50/70 font-semibold; }
+  .table-base thead th { position: sticky; top: 0; z-index: 1; }
+}
+
+@media print { .table-base tbody tr, .bar-grow, .svg-bar, .ring-draw, .pop-in, .float-slow, .shine { animation: none !important; } }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }

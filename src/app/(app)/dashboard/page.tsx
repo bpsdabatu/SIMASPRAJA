@@ -133,9 +133,9 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
 
           {/* Indikator utama berwarna */}
           <section aria-label="Indikator utama" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <KpiTile icon={Banknote} label="Total Pagu Anggaran" value={formatRupiah(k.total_pagu)} theme="sky" />
-            <KpiTile icon={TrendingUp} label="Total Realisasi Belanja" value={formatRupiah(k.total_realisasi)} hint="Transaksi ber-SP2D bertanggal" theme="emerald" />
-            <KpiTile icon={PiggyBank} label="Sisa Anggaran" value={formatRupiah(k.sisa_anggaran)} hint="Pagu − realisasi sah" theme={over ? "rose" : "amber"} />
+            <KpiTile icon={Banknote} label="Total Pagu Anggaran" value={formatRupiah(k.total_pagu)} count={{ n: Number(k.total_pagu), kind: "rupiah" }} theme="sky" />
+            <KpiTile icon={TrendingUp} label="Total Realisasi Belanja" value={formatRupiah(k.total_realisasi)} count={{ n: Number(k.total_realisasi), kind: "rupiah" }} hint="Transaksi ber-SP2D bertanggal" theme="emerald" />
+            <KpiTile icon={PiggyBank} label="Sisa Anggaran" value={formatRupiah(k.sisa_anggaran)} count={{ n: Number(k.sisa_anggaran), kind: "rupiah" }} hint="Pagu − realisasi sah" theme={over ? "rose" : "amber"} />
             <KpiTile icon={Percent} label="Persentase Realisasi" value={formatPercent(k.pct_realisasi)} hint={k.pct_realisasi === null ? "Pagu 0: persentase tidak dihitung" : undefined} theme="violet" />
           </section>
 

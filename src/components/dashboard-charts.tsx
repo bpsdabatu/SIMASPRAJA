@@ -1,3 +1,4 @@
+import type React from "react";
 import { cn } from "@/lib/utils";
 
 /** Grafik ringan berbasis SVG (dirender di server; tanpa pustaka tambahan, tanpa JavaScript klien). */
@@ -16,7 +17,8 @@ export function ProgressRing({ value, size = 132, track = "rgba(255,255,255,.14)
     <svg viewBox="0 0 132 132" width={size} height={size} role="img" aria-label={label ?? `Capaian ${v.toFixed(1)} persen`}>
       <defs><linearGradient id={id} x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor={from} /><stop offset="100%" stopColor={to} /></linearGradient></defs>
       <circle cx="66" cy="66" r={r} fill="none" stroke={track} strokeWidth="12" />
-      <circle cx="66" cy="66" r={r} fill="none" stroke={`url(#${id})`} strokeWidth="12" strokeLinecap="round"
+      <circle cx="66" cy="66" r={r} fill="none" stroke={`url(#${id})`} strokeWidth="12" strokeLinecap="round" className="ring-draw"
+        style={{ "--len": (v / 100) * c, "--c": c } as React.CSSProperties}
         strokeDasharray={`${(v / 100) * c} ${c}`} transform="rotate(-90 66 66)" />
       <text x="66" y="70" textAnchor="middle" fontSize="22" fontWeight="700" fill="currentColor">{value === null ? "-" : `${v.toFixed(1).replace(".", ",")}%`}</text>
     </svg>
@@ -35,7 +37,7 @@ export function Donut({ parts, center, size = 168 }: { parts: Part[]; center: { 
       <circle cx="84" cy="84" r={r} fill="none" stroke="#e2e8f0" strokeWidth="22" />
       {total > 0 && parts.filter((p) => p.value > 0).map((p) => {
         const len = (p.value / total) * c;
-        const el = <circle key={p.label} cx="84" cy="84" r={r} fill="none" stroke={p.hex} strokeWidth="22" strokeDasharray={`${Math.max(0, len - 1.5)} ${c}`} strokeDashoffset={-acc} transform="rotate(-90 84 84)" />;
+        const el = <circle key={p.label} cx="84" cy="84" r={r} fill="none" stroke={p.hex} strokeWidth="22" className="ring-draw" style={{ "--len": Math.max(0, len - 1.5), "--c": c, animationDelay: `${parts.indexOf(p) * 0.12}s` } as React.CSSProperties} strokeDasharray={`${Math.max(0, len - 1.5)} ${c}`} strokeDashoffset={-acc} transform="rotate(-90 84 84)" />;
         acc += len;
         return el;
       })}
@@ -81,8 +83,8 @@ export function QuarterBars({ data }: { data: QBar[] }) {
         const cx = L + gw * i + gw / 2;
         return (
           <g key={d.label}>
-            <rect x={cx - bw - 3} y={y(d.kas)} width={bw} height={Math.max(0, H - B - y(d.kas))} rx="4" fill="#6366f1"><title>{`${d.label} — target kas ${compactRp(d.kas)}`}</title></rect>
-            <rect x={cx + 3} y={y(d.real)} width={bw} height={Math.max(0, H - B - y(d.real))} rx="4" fill="#10b981"><title>{`${d.label} — realisasi ${compactRp(d.real)}`}</title></rect>
+            <rect x={cx - bw - 3} y={y(d.kas)} width={bw} height={Math.max(0, H - B - y(d.kas))} rx="4" fill="#6366f1" className="svg-bar" style={{ animationDelay: `${i * 0.1}s` }}><title>{`${d.label} — target kas ${compactRp(d.kas)}`}</title></rect>
+            <rect x={cx + 3} y={y(d.real)} width={bw} height={Math.max(0, H - B - y(d.real))} rx="4" fill="#10b981" className="svg-bar" style={{ animationDelay: `${i * 0.1 + 0.08}s` }}><title>{`${d.label} — realisasi ${compactRp(d.real)}`}</title></rect>
             <text x={cx - bw / 2 - 3} y={y(d.kas) - 5} textAnchor="middle" fontSize="9.5" fill="#4338ca">{d.kas > 0 ? compact.format(d.kas) : ""}</text>
             <text x={cx + bw / 2 + 3} y={y(d.real) - 5} textAnchor="middle" fontSize="9.5" fill="#047857">{d.real > 0 ? compact.format(d.real) : ""}</text>
             <text x={cx} y={H - 12} textAnchor="middle" fontSize="11" fontWeight="600" fill="#334155">{d.label}</text>
@@ -99,7 +101,7 @@ export function StackBar({ parts }: { parts: { label: string; value: number; col
   return (
     <div>
       <div className="flex h-3 overflow-hidden rounded-full bg-slate-100" role="img" aria-label={parts.map((p) => `${p.label} ${p.value}`).join(", ")}>
-        {total > 0 && parts.filter((p) => p.value > 0).map((p) => <div key={p.label} className={p.color} style={{ width: `${(p.value / total) * 100}%` }} title={`${p.label}: ${p.value}`} />)}
+        {total > 0 && parts.filter((p) => p.value > 0).map((p) => <div key={p.label} className={cn(p.color, "bar-grow")} style={{ width: `${(p.value / total) * 100}%` }} title={`${p.label}: ${p.value}`} />)}
       </div>
       <ul className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-3">
         {parts.map((p) => <li key={p.label} className="flex items-center gap-2 text-slate-600"><span className={cn("h-2.5 w-2.5 rounded-sm", p.color)} aria-hidden /><span className="truncate">{p.label}</span><b className="ml-auto tabular-nums text-slate-900">{p.value}</b></li>)}

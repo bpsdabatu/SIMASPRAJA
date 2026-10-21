@@ -5,6 +5,8 @@ import { requireModule } from "@/lib/auth/guard";
 import { userClient } from "@/lib/supabase/server";
 import { MASTER, MASTER_KEYS, type MasterEntity } from "@/lib/master-config";
 import { IMPORT_SPECS, STANDARD_PROCUREMENT_METHODS } from "@/lib/master-import";
+import { SEED_LABEL, SEED_ORDER, seedCounts } from "@/lib/master-seed";
+import { SEED_PPTK_NAMES } from "@/data/master-bapersuda";
 import { Badge, Card, CardHeader } from "@/components/ui/card";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
@@ -14,7 +16,7 @@ import { PrintFooter, PrintHeader } from "@/components/ui/report";
 import { getOrganizationName } from "@/lib/lookups";
 import { PptkImportForm } from "./pptk-import-form";
 import { cn } from "@/lib/utils";
-import { deleteMasterAction, importMasterAction, importMasterWorkbookAction, seedProcurementMethodsAction, saveMasterAction, toggleMasterAction } from "./actions";
+import { deleteMasterAction, importMasterAction, importMasterWorkbookAction, seedMasterBawaanAction, seedProcurementMethodsAction, saveMasterAction, toggleMasterAction } from "./actions";
 
 export const metadata: Metadata = { title: "Data Master" };
 export const dynamic = "force-dynamic";
@@ -98,6 +100,21 @@ export default async function MasterPage({ searchParams }: { searchParams: Promi
       <Flash ok={sp.ok} err={sp.err} />
 
       <MasterTabs tab={tab} canUsers={canUsers} />
+
+      {canManage && tab === "programs" && (
+        <Card className="no-print overflow-hidden">
+          <div className="grid gap-4 bg-gradient-to-r from-navy-50 via-white to-gold-50 p-5 sm:grid-cols-[1fr_auto] sm:items-center">
+            <div>
+              <p className="text-sm font-semibold text-navy-900">Muat data master bawaan Bagian Perekonomian dan SDA</p>
+              <p className="mt-1 text-sm text-slate-600">
+                {SEED_ORDER.map((k) => `${seedCounts()[k]} ${SEED_LABEL[k].toLowerCase()}`).join(" · ")}. Aditif dan aman diulang: hanya kode yang belum ada yang ditambahkan;
+                data yang sudah ada (termasuk yang sudah dipakai anggaran/transaksi) tidak diubah. PPTK dibuat sebagai akun melalui tab PPTK.
+              </p>
+            </div>
+            <form action={seedMasterBawaanAction}><SubmitButton variant="accent" pendingText="Memuat...">Muat data bawaan</SubmitButton></form>
+          </div>
+        </Card>
+      )}
 
       {tab === "procurement_methods" && (
         <Card className="no-print p-5">
@@ -274,6 +291,7 @@ async function PptkTab({ sp, org }: { sp: { ok?: string; err?: string }; org: st
         <CardHeader title="Unggah PPTK dari Excel / CSV" actions={<>
           <a href="/master/template?tab=pptk&format=xlsx" className={buttonVariants({ variant: "outline", size: "sm" })}><FileSpreadsheet size={14} aria-hidden /> Templat Excel</a>
           <a href="/master/template?tab=pptk&format=csv" className={buttonVariants({ variant: "outline", size: "sm" })}><FileSpreadsheet size={14} aria-hidden /> Templat CSV</a>
+          <a href="/master/template?tab=pptk&format=xlsx&prefill=bawaan" className={buttonVariants({ variant: "soft", size: "sm" })} title="Berisi nama PPTK dari master bawaan; username hanya usulan"><FileSpreadsheet size={14} aria-hidden /> Templat berisi {SEED_PPTK_NAMES.length} PPTK bawaan</a>
           <Link href="/pengguna" className={buttonVariants({ variant: "soft", size: "sm" })}>Kelola di Pengguna &amp; Peran</Link>
         </>} />
         <div className="p-5"><PptkImportForm /></div>

@@ -3,6 +3,7 @@ import { formatPercent, formatRupiah } from "@/lib/format";
 import type { RankRow } from "@/lib/ranking-core";
 import type { SupplierRank } from "@/lib/supplier-ranking-core";
 import { compactRp } from "@/components/dashboard-charts";
+import { CountUp } from "@/components/count-up";
 
 /** Palet per kategori. Seluruh kelas ditulis utuh agar terdeteksi Tailwind (tidak boleh disusun dinamis). */
 export type ThemeKey = "sky" | "emerald" | "amber" | "violet" | "rose" | "teal" | "indigo" | "fuchsia" | "orange" | "cyan";
@@ -22,19 +23,21 @@ export const THEME: Record<ThemeKey, Theme> = {
 };
 
 /** Ubin KPI berwarna (gradien) — satu warna berbeda untuk tiap indikator. */
-export function KpiTile({ icon: Icon, label, value, hint, theme }: {
+export function KpiTile({ icon: Icon, label, value, hint, theme, count }: {
   icon: React.ComponentType<{ size?: number; "aria-hidden"?: boolean }>; label: string; value: string; hint?: string; theme: ThemeKey;
+  /** Bila diisi, angka dihitung naik (count-up) saat tampil; `value` tetap menjadi teks cadangan/aksesibilitas. */
+  count?: { n: number; kind: "rupiah" | "percent" | "int" };
 }) {
   const t = THEME[theme];
   return (
-    <div className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${t.tile} p-5 text-white shadow-lift`}>
-      <span aria-hidden className="pointer-events-none absolute -right-6 -top-6 h-24 w-24 rounded-full bg-white/15" />
+    <div className={`card-lift pop-in relative overflow-hidden rounded-2xl bg-gradient-to-br ${t.tile} p-5 text-white shadow-lift`}>
+      <span aria-hidden className="float-slow pointer-events-none absolute -right-6 -top-6 h-24 w-24 rounded-full bg-white/15" />
       <span aria-hidden className="pointer-events-none absolute -bottom-8 right-6 h-20 w-20 rounded-full bg-white/10" />
       <div className="relative flex items-start justify-between gap-3">
         <p className="text-sm font-medium text-white/90">{label}</p>
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/20"><Icon size={18} aria-hidden /></span>
       </div>
-      <p className="relative mt-3 break-words font-display text-2xl font-bold tabular-nums">{value}</p>
+      <p className="relative mt-3 break-words font-display text-2xl font-bold tabular-nums">{count ? <CountUp to={count.n} kind={count.kind} fallback={value} /> : value}</p>
       {hint && <p className="relative mt-1 text-xs text-white/80">{hint}</p>}
     </div>
   );
@@ -46,7 +49,7 @@ export function MiniStat({ icon: Icon, label, value, theme }: {
 }) {
   const t = THEME[theme];
   return (
-    <div className={`flex items-center gap-3 rounded-xl border ${t.border} ${t.soft} px-4 py-3`}>
+    <div className={`card-lift pop-in flex items-center gap-3 rounded-xl border ${t.border} ${t.soft} px-4 py-3`}>
       <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${t.chip}`}><Icon size={18} aria-hidden /></span>
       <div className="min-w-0">
         <p className="text-xs font-medium text-slate-600">{label}</p>
@@ -62,7 +65,7 @@ export function BandCard({ theme, icon: Icon, title, subtitle, children }: {
 }) {
   const t = THEME[theme];
   return (
-    <section className={`overflow-hidden rounded-2xl border ${t.border} bg-white shadow-card`}>
+    <section className={`card-lift pop-in overflow-hidden rounded-2xl border ${t.border} bg-white shadow-card`}>
       <header className={`flex items-center gap-3 bg-gradient-to-r ${t.band} px-5 py-3.5 text-white`}>
         <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/20"><Icon size={18} aria-hidden /></span>
         <div className="min-w-0">
@@ -83,7 +86,7 @@ function RankItem({ r, n, theme }: { r: RankRow; n: number; theme: ThemeKey }) {
       <span className={`mt-0.5 flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${n <= 3 ? t.badge : t.chip}`}>{n}</span>
       <div className="min-w-0">
         <p className="break-words text-sm font-medium leading-snug text-slate-900">{r.code && <span className="mr-1 text-xs text-slate-500">{r.code}</span>}{r.name}</p>
-        <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-100" role="presentation"><div className={`h-full rounded-full ${t.bar}`} style={{ width: `${pct}%` }} /></div>
+        <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-100" role="presentation"><div className={`bar-grow h-full rounded-full ${t.bar}`} style={{ width: `${pct}%` }} /></div>
         <p className="mt-1 text-xs text-slate-500">
           Realisasi periode <b className="text-slate-700">{formatRupiah(r.realPeriod)}</b> · kumulatif {compactRp(r.realCum)} dari pagu {compactRp(r.pagu)}
           {r.pctKas !== null ? ` · ${formatPercent(r.pctKas)} dari target kas` : ""}
@@ -131,7 +134,7 @@ export function SupplierList({ rows }: { rows: SupplierRank[] }) {
                 : <span className={`mt-0.5 flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold ${th.chip}`}>{i + 1}</span>}
               <div className="min-w-0">
                 <p className="break-words text-sm font-semibold leading-snug text-slate-900">{r.name}</p>
-                <div className="mt-1 h-2.5 overflow-hidden rounded-full bg-slate-100" role="presentation"><div className={`h-full rounded-full ${th.bar}`} style={{ width: `${Math.max(2, (r.total / max) * 100)}%` }} /></div>
+                <div className="mt-1 h-2.5 overflow-hidden rounded-full bg-slate-100" role="presentation"><div className={`bar-grow h-full rounded-full ${th.bar}`} style={{ width: `${Math.max(2, (r.total / max) * 100)}%`, animationDelay: `${Math.min(i, 12) * 0.05}s` }} /></div>
                 <p className="mt-1 text-xs text-slate-500">{r.count} transaksi · terbesar {compactRp(r.largest)} · {formatPercent(r.share)} dari total</p>
               </div>
               <p className={`text-right font-display text-base font-bold tabular-nums ${th.text}`}>{formatRupiah(r.total)}</p>

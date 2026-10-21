@@ -6,13 +6,14 @@ import { STAGE_LABEL } from "@/lib/auth/context";
 import { getOrganizationName } from "@/lib/lookups";
 import { formatRupiah } from "@/lib/format";
 import { Badge, Card, CardHeader } from "@/components/ui/card";
-import { Download, FileSpreadsheet, Upload } from "lucide-react";
+import { Download, Repeat2, Upload } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/input";
 import { EmptyState, Flash, PageHeader } from "@/components/ui/page";
 import { ConfirmSubmit, PrintButton, SubmitButton } from "@/components/ui/submit-button";
 import { PrintFooter, PrintHeader, SignatureBlock } from "@/components/ui/report";
-import { cashStatusAction, deleteCashPlanAction, importCashPlansAction, saveCashPlanAction } from "./actions";
+import { cashStatusAction, deleteCashPlanAction, saveCashPlanAction } from "./actions";
+import { CashAdjustPanel, CashImportPanel } from "./cash-tools";
 import { CashPlanGrid, type GridRow } from "./cash-plan-grid";
 
 export const metadata: Metadata = { title: "Anggaran Kas" };
@@ -39,14 +40,22 @@ export default async function AnggaranKasPage({ searchParams }: { searchParams: 
   const { user, context } = await requireModule("cashplan.view");
   const sp = await searchParams;
   const supabase = await userClient();
-  const [itemsRes, plansRes, org] = await Promise.all([
+  const [itemsRes, plansRes, org, versRes] = await Promise.all([
     fetchAll<ItemRow>((from, to) => supabase.from("budget_item_versions")
       .select("budget_item_id, pagu, budget_items(id, description, pptk_id, sub_activities(code,name), expenditure_accounts(code,name), pptk:profiles!budget_items_pptk_id_fkey(full_name))")
       .eq("budget_version_id", context.versionId).order("budget_item_id").range(from, to)),
     fetchAll<PlanRow>((from, to) => supabase.from("cash_budget_plans").select("id, budget_item_id, status, revision_no, change_reason, cash_budget_periods(period_no, amount)")
       .eq("budget_version_id", context.versionId).order("id").range(from, to)),
     getOrganizationName(supabase, user.organizationId),
+    supabase.from("budget_versions").select("id, stage_code, version_no, status, parent_version_id, created_at, fiscal_years(year)").order("created_at", { ascending: true }).limit(200),
   ]);
+  type V = { id: string; stage_code: keyof typeof STAGE_LABEL; version_no: number; status: string; parent_version_id: string | null; fiscal_years: { year: number } | { year: number }[] | null };
+  const yearOf = (v: V) => (Array.isArray(v.fiscal_years) ? v.fiscal_years[0]?.year : v.fiscal_years?.year);
+  const allV = (versRes.data ?? []) as unknown as V[];
+  const curV = allV.find((v) => v.id === context.versionId);
+  const sameYear = allV.filter((v) => v.id !== context.versionId && curV && yearOf(v) === yearOf(curV));
+  const sources = sameYear.map((v) => ({ id: v.id, label: `${STAGE_LABEL[v.stage_code]} v${v.version_no} (${v.status})` }));
+  const defaultSource = (curV?.parent_version_id && sameYear.some((v) => v.id === curV.parent_version_id) ? curV.parent_version_id : sameYear[sameYear.length - 1]?.id) ?? "";
   const error = itemsRes.error;
   const items = itemsRes.rows.filter((r) => r.budget_items)
     .sort((a, b) => (a.budget_items!.sub_activities?.code ?? "").localeCompare(b.budget_items!.sub_activities?.code ?? "", "id", { numeric: true }));
@@ -105,16 +114,11 @@ export default async function AnggaranKasPage({ searchParams }: { searchParams: 
         <Card className="no-print">
           <details>
             <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 text-sm font-semibold text-navy-800 [&::-webkit-details-marker]:hidden"><Upload size={16} aria-hidden /> Isi Anggaran Kas dari Excel / CSV</summary>
-            <form action={importCashPlansAction} encType="multipart/form-data" className="space-y-4 border-t border-slate-100 p-5">
-              <input type="hidden" name="versionId" value={context.versionId} />
-              <p className="text-sm text-slate-600">Unduh templat (sudah berisi butir Input Anggaran yang ditugaskan kepada Anda), isi nominal Jan–Des, lalu unggah. Hasil tersimpan sebagai <b>draf</b>; periksa lalu ajukan. Total per butir tidak boleh melebihi pagu.</p>
-              <div className="flex flex-wrap gap-2">
-                <a href="/anggaran-kas/template?format=xlsx" className={buttonVariants({ variant: "outline", size: "sm" })}><FileSpreadsheet size={14} aria-hidden /> Templat Excel</a>
-                <a href="/anggaran-kas/template?format=csv" className={buttonVariants({ variant: "outline", size: "sm" })}><FileSpreadsheet size={14} aria-hidden /> Templat CSV</a>
-              </div>
-              <Field label="Berkas Excel (.xlsx) atau CSV" htmlFor="kas-file"><Input id="kas-file" name="file" type="file" accept=".xlsx,.csv,.txt" required className="h-auto py-2" /></Field>
-              <SubmitButton variant="accent" pendingText="Mengimpor...">Unggah</SubmitButton>
-            </form>
+            <CashImportPanel versionId={context.versionId} />
+          </details>
+          <details className="border-t border-slate-100">
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 text-sm font-semibold text-navy-800 [&::-webkit-details-marker]:hidden"><Repeat2 size={16} aria-hidden /> Sesuaikan kas karena Pergeseran / Perubahan</summary>
+            <CashAdjustPanel versionId={context.versionId} sources={sources} defaultSource={defaultSource} />
           </details>
         </Card>
       )}

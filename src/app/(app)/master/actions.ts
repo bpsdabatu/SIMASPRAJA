@@ -7,6 +7,7 @@ import { MASTER } from "@/lib/master-config";
 import { readTable, readWorkbook } from "@/lib/spreadsheet";
 import { parseMasterTable, rowKey, IMPORT_SPECS, STANDARD_PROCUREMENT_METHODS, type ParsedRow } from "@/lib/master-import";
 import { friendlyError, isUuid, optStr, runAction, str } from "@/lib/action-utils";
+import { SEED_LABEL, SEED_ORDER, planSeed, totalInserts, type ExistingMaster, type SeedEntity } from "@/lib/master-seed";
 
 export async function saveMasterAction(fd: FormData): Promise<void> {
   const { user } = await requireModule("master.manage");
@@ -222,4 +223,81 @@ export async function seedProcurementMethodsAction(): Promise<void> {
   const { error } = await supabase.from("procurement_methods").insert(rows);
   if (error) flashRedirect(back, { err: friendlyError(error) });
   flashRedirect(back, { ok: `${rows.length} metode pengadaan baku ditambahkan.` });
+}
+
+/**
+ * Memuat Data Master bawaan Bagian Perekonomian dan SDA (Program, Kegiatan, Sub Kegiatan, Rekening Belanja, Sumber Dana).
+ * ADITIF & aman diulang: hanya kode yang belum ada yang ditambahkan; data yang sudah ada (termasuk yang sudah dipakai
+ * butir anggaran/transaksi) tidak diubah, dipindah, atau dihapus. Selisih nama dilaporkan, bukan ditimpa.
+ */
+export async function seedMasterBawaanAction(): Promise<void> {
+  const { user } = await requireModule("master.manage");
+  const back = "/master?tab=programs";
+  const supabase = await userClient();
+
+
+  const [pg, ac, sa, ex, fu] = await Promise.all([
+    supabase.from("programs").select("id, code, name").limit(20000),
+    supabase.from("activities").select("id, code, name, program_id").limit(20000),
+    supabase.from("sub_activities").select("id, code, name, activity_id").limit(20000),
+    supabase.from("expenditure_accounts").select("id, code, name").limit(20000),
+    supabase.from("funding_sources").select("id, code, name").limit(20000),
+  ]);
+  if (pg.error || ac.error || sa.error || ex.error || fu.error) flashRedirect(back, { err: "Data master yang ada tidak dapat dibaca. Muat ulang halaman atau hubungi administrator." });
+
+  const progCodeById = new Map((pg.data ?? []).map((r) => [r.id as string, String(r.code)]));
+  const actCodeById = new Map((ac.data ?? []).map((r) => [r.id as string, String(r.code)]));
+  const existing: ExistingMaster = {
+    programs: (pg.data ?? []).map((r) => ({ code: String(r.code), name: String(r.name) })),
+    activities: (ac.data ?? []).map((r) => ({ code: String(r.code), name: String(r.name), parentCode: progCodeById.get(r.program_id as string) ?? null })),
+    sub_activities: (sa.data ?? []).map((r) => ({ code: String(r.code), name: String(r.name), parentCode: actCodeById.get(r.activity_id as string) ?? null })),
+    expenditure_accounts: (ex.data ?? []).map((r) => ({ code: String(r.code), name: String(r.name) })),
+    funding_sources: (fu.data ?? []).map((r) => ({ code: String(r.code), name: String(r.name) })),
+  };
+  const plan = planSeed(existing);
+  const added: string[] = [];
+
+  const insert = async (entity: SeedEntity, table: string, rows: Record<string, unknown>[]): Promise<string | null> => {
+    if (rows.length === 0) return null;
+    const { error } = await supabase.from(table).insert(rows);
+    if (error) return `${SEED_LABEL[entity]}: ${friendlyError(error)}`;
+    added.push(`${SEED_LABEL[entity]} +${rows.length}`);
+    return null;
+  };
+  const org = user.organizationId;
+  const stop = (msg: string) => flashRedirect(back, { err: `${msg}${added.length ? ` (sudah tersimpan: ${added.join("; ")})` : ""}` });
+
+  // Urutan induk -> anak; ID induk diambil ulang setelah penyisipan agar akurat.
+  let e = await insert("programs", "programs", plan.inserts.programs.map((r) => ({ organization_id: org, code: r.code, name: r.name })));
+  if (e) stop(e);
+  const progIds = new Map(((await supabase.from("programs").select("id, code").limit(20000)).data ?? []).map((r) => [String(r.code).trim().toLowerCase(), r.id as string]));
+
+  const actRows: Record<string, unknown>[] = [];
+  for (const r of plan.inserts.activities) {
+    const pid = progIds.get((r.parentCode ?? "").toLowerCase());
+    if (!pid) stop(`Program induk ${r.parentCode} untuk kegiatan ${r.code} tidak ditemukan.`);
+    actRows.push({ organization_id: org, program_id: pid, code: r.code, name: r.name });
+  }
+  e = await insert("activities", "activities", actRows);
+  if (e) stop(e);
+  const actIds = new Map(((await supabase.from("activities").select("id, code").limit(20000)).data ?? []).map((r) => [String(r.code).trim().toLowerCase(), r.id as string]));
+
+  const subRows: Record<string, unknown>[] = [];
+  for (const r of plan.inserts.sub_activities) {
+    const aid = actIds.get((r.parentCode ?? "").toLowerCase());
+    if (!aid) stop(`Kegiatan induk ${r.parentCode} untuk sub kegiatan ${r.code} tidak ditemukan.`);
+    subRows.push({ organization_id: org, activity_id: aid, code: r.code, name: r.name });
+  }
+  e = await insert("sub_activities", "sub_activities", subRows);
+  if (e) stop(e);
+
+  e = await insert("expenditure_accounts", "expenditure_accounts", plan.inserts.expenditure_accounts.map((r) => ({ organization_id: org, code: r.code, name: r.name })));
+  if (e) stop(e);
+  e = await insert("funding_sources", "funding_sources", plan.inserts.funding_sources.map((r) => ({ organization_id: org, code: r.code, name: r.name })));
+  if (e) stop(e);
+
+  const skipped = SEED_ORDER.reduce((n, k) => n + plan.skipped[k], 0);
+  const diff = plan.differences.length ? ` ${plan.differences.length} data bernama/berinduk berbeda dibiarkan apa adanya.` : "";
+  if (totalInserts(plan) === 0) flashRedirect(back, { ok: `Tidak ada yang perlu ditambahkan: seluruh ${skipped} data master bawaan sudah ada.${diff}` });
+  flashRedirect(back, { ok: `Data master bawaan dimuat — ${added.join("; ")}; ${skipped} sudah ada dilewati.${diff}` });
 }
