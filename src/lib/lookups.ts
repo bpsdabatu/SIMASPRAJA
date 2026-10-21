@@ -44,3 +44,31 @@ export async function getOrganizationName(sb: Sb, organizationId: string): Promi
   const { data } = await sb.from("organizations").select("name").eq("id", organizationId).maybeSingle();
   return (data?.name as string | undefined) ?? "";
 }
+
+export interface TreeProgram { id: string; code: string; name: string }
+export interface TreeActivity { id: string; programId: string; code: string; name: string }
+export interface TreeSub { id: string; activityId: string; code: string; name: string }
+export interface TreeFlat { id: string; code: string; name: string }
+export interface BudgetTree {
+  programs: TreeProgram[]; activities: TreeActivity[]; subs: TreeSub[];
+  accounts: TreeFlat[]; funding: TreeFlat[]; pptk: Opt[];
+}
+
+/** Pohon master untuk formulir bertingkat Input Anggaran: Program → Kegiatan → Sub Kegiatan, plus rekening, sumber dana, PPTK (hanya yang aktif). */
+export async function loadBudgetTree(sb: Sb): Promise<BudgetTree> {
+  const act = (t: string, cols: string) => sb.from(t).select(cols).eq("is_active", true).order("code").limit(5000);
+  const [pg, ac, su, ex, fu, pptk] = await Promise.all([
+    act("programs", "id, code, name"), act("activities", "id, program_id, code, name"), act("sub_activities", "id, activity_id, code, name"),
+    act("expenditure_accounts", "id, code, name"), act("funding_sources", "id, code, name"), usersWithRole(sb, "pptk"),
+  ]);
+  type R = Record<string, string>;
+  const rows = (r: { data: unknown }) => (r.data ?? []) as unknown as R[];
+  return {
+    programs: rows(pg).map((r) => ({ id: r.id!, code: r.code!, name: r.name! })),
+    activities: rows(ac).map((r) => ({ id: r.id!, programId: r.program_id!, code: r.code!, name: r.name! })),
+    subs: rows(su).map((r) => ({ id: r.id!, activityId: r.activity_id!, code: r.code!, name: r.name! })),
+    accounts: rows(ex).map((r) => ({ id: r.id!, code: r.code!, name: r.name! })),
+    funding: rows(fu).map((r) => ({ id: r.id!, code: r.code!, name: r.name! })),
+    pptk,
+  };
+}
