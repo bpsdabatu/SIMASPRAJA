@@ -186,7 +186,7 @@ export function planCashImport(table: string[][], head: CashHeader, items: CashI
 
 /* ------------------------------------------------------------------ penyesuaian antartahapan ------------------------------------------------------------------ */
 
-export type AdjustStatus = "salin" | "kurangi" | "terisi" | "dikunci" | "tanpa_sumber";
+export type AdjustStatus = "salin" | "kurangi" | "realisasi" | "melebihi" | "terisi" | "dikunci" | "tanpa_sumber";
 export interface AdjustTarget { itemId: string; label: string; pagu: number; mine: boolean; status: CashItemStatus; months: number[] }
 export interface AdjustSource { pagu: number | null; months: number[] | null }
 export interface AdjustRow {
@@ -221,10 +221,83 @@ export function planCashAdjust(targets: AdjustTarget[], source: Map<string, Adju
       : gap > 0 ? `Disalin; pagu baru lebih besar, sisa ${fromCents(gap).toLocaleString("id-ID")} belum dialokasikan` : "Disalin; pas sesuai pagu";
     rows.push({ ...base, newTotal, months: fit.months, status: fit.changed ? "kurangi" : "salin", message: msg });
   }
-  const counts: Record<AdjustStatus, number> = { salin: 0, kurangi: 0, terisi: 0, dikunci: 0, tanpa_sumber: 0 };
+  const counts: Record<AdjustStatus, number> = { salin: 0, kurangi: 0, realisasi: 0, melebihi: 0, terisi: 0, dikunci: 0, tanpa_sumber: 0 };
   for (const r of rows) counts[r.status]++;
   return { rows, others, counts };
 }
+
+/* ------------------------------------------------------------------ penyesuaian kas berbasis realisasi ------------------------------------------------------------------ */
+
+export interface RealizedByItem {
+  /** Realisasi sah (ber-SP2D) per bulan SP2D, 12 nilai (lintas tahapan). */
+  monthly: number[];
+  /** Bagian realisasi pada bulan DPA yang bertanggal SP2D SEBELUM tanggal DPA (sudah terjadi pada tahapan sebelumnya). */
+  preDpaMonth: number;
+}
+
+/** Pembagian sen proporsional (metode sisa terbesar); jumlah tepat = total. Bobot semua nol -> rata. */
+function splitCents(total: number, weights: number[]): number[] {
+  const w = weights.map((x) => Math.max(0, x));
+  const sw = w.reduce((a, b) => a + b, 0);
+  const ww = sw > 0 ? w : w.map(() => 1);
+  const sum = ww.reduce((a, b) => a + b, 0);
+  const raw = ww.map((x) => (total * x) / sum);
+  const fl = raw.map(Math.floor);
+  let left = total - fl.reduce((a, b) => a + b, 0);
+  const order = raw.map((r, i) => ({ i, f: r - Math.floor(r) })).sort((a, b) => b.f - a.f || a.i - b.i);
+  for (const o of order) { if (left <= 0) break; fl[o.i]!++; left--; }
+  return fl;
+}
+
+/**
+ * Menyusun kas tahapan baru dari REALISASI nyata:
+ *  - bulan SEBELUM bulan tanggal DPA  : kas = realisasi sebenarnya bulan itu;
+ *  - bulan DPA s.d. Desember          : sisa pagu baru (pagu - realisasi sebelum tanggal DPA) dibagi mengikuti pola rencana kas lama
+ *                                       (bobot = kas lama pada bulan-bulan tsb; bila tidak ada -> rata); realisasi bulan DPA yang bertanggal
+ *                                       sebelum DPA ditambahkan pada bulan DPA.
+ * Total kas selalu TEPAT sama dengan pagu baru. Bila realisasi sebelum DPA melebihi pagu baru -> "melebihi" (tidak disimpan).
+ * Isian yang sudah ada dilindungi kecuali overwrite; butir diajukan/final tidak disentuh; hanya butir milik PPTK yang login.
+ */
+export function planCashFromRealization(
+  targets: AdjustTarget[], source: Map<string, AdjustSource>, realized: Map<string, RealizedByItem>, dpaDate: string, overwrite: boolean,
+): AdjustOutcome {
+  const m0 = Math.min(11, Math.max(0, Number(dpaDate.slice(5, 7)) - 1));
+  const rows: AdjustRow[] = [];
+  let others = 0;
+  for (const t of targets) {
+    if (!t.mine) { others++; continue; }
+    const s = source.get(t.itemId);
+    const real = realized.get(t.itemId);
+    const oldTotal = s?.months ? sumMonths(s.months) : 0;
+    const base = { itemId: t.itemId, label: t.label, oldPagu: s?.pagu ?? null, newPagu: t.pagu, oldTotal, newTotal: 0 };
+    if (t.status === "submitted" || t.status === "final") { rows.push({ ...base, status: "dikunci", message: `Berstatus ${t.status === "final" ? "final" : "diajukan"}; tidak diubah` }); continue; }
+    const hasReal = !!real && (real.monthly.some((v) => cents(v) > 0) || cents(real.preDpaMonth) > 0);
+    if (!hasReal && cents(oldTotal) === 0) { rows.push({ ...base, status: "tanpa_sumber", message: "Tidak ada realisasi maupun kas tahapan sumber" }); continue; }
+    if (!overwrite && cents(sumMonths(t.months)) > 0) { rows.push({ ...base, status: "terisi", message: "Sudah ada isian; dilindungi (centang “timpa” bila ingin mengganti)" }); continue; }
+
+    const closed = Array.from({ length: 12 }, (_, i) => (i < m0 ? cents(real?.monthly[i] ?? 0) : 0));
+    const pre = cents(real?.preDpaMonth ?? 0);
+    const realizedBefore = closed.reduce((a, b) => a + b, 0) + pre;
+    const rest = cents(t.pagu) - realizedBefore;
+    if (rest < 0) {
+      rows.push({ ...base, status: "melebihi", message: `Realisasi sebelum tanggal DPA (${fromCents(realizedBefore).toLocaleString("id-ID")}) melebihi pagu baru (${t.pagu.toLocaleString("id-ID")}); periksa pagu atau data realisasi` });
+      continue;
+    }
+    const weights = Array.from({ length: 12 - m0 }, (_, k) => cents(s?.months?.[m0 + k] ?? 0));
+    const share = splitCents(rest, weights);
+    const outC = closed.slice();
+    for (let k = 0; k < share.length; k++) outC[m0 + k] = share[k]! + (k === 0 ? pre : 0);
+    const months = outC.map(fromCents);
+    rows.push({
+      ...base, newTotal: sumMonths(months), months, status: "realisasi",
+      message: `Bulan sebelum ${MONTH_NAMES[m0]} = realisasi (${fromCents(closed.reduce((a, b) => a + b, 0)).toLocaleString("id-ID")}); sisa ${fromCents(rest).toLocaleString("id-ID")} dibagi ${MONTH_NAMES[m0]}–Des${cents(oldTotal) > 0 ? " mengikuti pola kas lama" : " secara rata"}`,
+    });
+  }
+  const counts: Record<AdjustStatus, number> = { salin: 0, kurangi: 0, realisasi: 0, melebihi: 0, terisi: 0, dikunci: 0, tanpa_sumber: 0 };
+  for (const r of rows) counts[r.status]++;
+  return { rows, others, counts };
+}
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
 
 /** Keadaan yang dikembalikan aksi server ke panel (periksa dulu -> terapkan). */
 export interface CashImportState {

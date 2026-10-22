@@ -1,0 +1,367 @@
+import { parseMoney } from "@/lib/csv";
+import { normHeader } from "@/lib/header";
+import { normName, resolvePptk, type Lookups } from "@/lib/budget-import-core";
+
+/**
+ * Inti impor Realisasi (murni, tanpa akses database; dapat diuji).
+ *
+ * Format yang dipahami = laporan "Pencarian Realisasi per Metode" (Rekap per metode di atas + tabel RINCIAN TRANSAKSI):
+ *   No | Tgl Transaksi | Uraian | Sub Kegiatan | Nama Belanja | Sumber Dana | Metode Pemilihan | Nominal (Rp) | Tgl SP2D | PPTK
+ * Sub Kegiatan/Belanja boleh berupa NAMA atau KODE (kolom kode_sub_kegiatan / kode_rekening opsional); PPTK boleh nama atau username.
+ * Tahun anggaran TIDAK diambil dari judul laporan; tahapan ditentukan oleh tanggal DPA (lihat stageForDate).
+ */
+
+/* ------------------------------------------------------------------ tanggal & uang ------------------------------------------------------------------ */
+
+const pad = (n: number) => String(n).padStart(2, "0");
+const validYmd = (y: number, m: number, d: number) => {
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d ? `${y}-${pad(m)}-${pad(d)}` : null;
+};
+
+/** "23/01/2026", "23-01-2026", "2026-01-23" -> "2026-01-23"; kosong -> null; tidak valid -> undefined. */
+export function parseDateFlexible(raw: string): string | null | undefined {
+  const s = raw.trim();
+  if (s === "") return null;
+  let m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/.exec(s);
+  if (m) return validYmd(Number(m[3]), Number(m[2]), Number(m[1])) ?? undefined;
+  m = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ].*)?$/.exec(s);
+  if (m) return validYmd(Number(m[1]), Number(m[2]), Number(m[3])) ?? undefined;
+  return undefined;
+}
+
+export const cleanText = (s: string) => s.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+
+/* ------------------------------------------------------------------ urai laporan ------------------------------------------------------------------ */
+
+type Col = "no" | "txDate" | "desc" | "subName" | "subCode" | "accName" | "accCode" | "funding" | "method" | "amount" | "sp2dDate" | "pptk" | "supplier";
+const ALIASES: Record<Col, string[]> = {
+  no: ["no", "nomor"],
+  txDate: ["tgl_transaksi", "tanggal_transaksi"],
+  desc: ["uraian", "keterangan"],
+  subName: ["sub_kegiatan", "nama_sub_kegiatan"],
+  subCode: ["kode_sub_kegiatan"],
+  accName: ["nama_belanja", "belanja", "nama_rekening"],
+  accCode: ["kode_rekening", "kode_belanja"],
+  funding: ["sumber_dana", "kode_sumber_dana", "nama_sumber_dana"],
+  method: ["metode_pemilihan", "metode_pengadaan", "metode"],
+  amount: ["nominal_rp", "nominal", "jumlah", "nilai"],
+  sp2dDate: ["tgl_sp2d", "tanggal_sp2d"],
+  pptk: ["pptk", "nama_pptk", "username_pptk"],
+  supplier: ["penyedia", "nama_penyedia"],
+};
+
+export interface RawRow {
+  /** Nomor baris pada berkas (urutan sel), untuk pesan galat. */
+  line: number; no: string;
+  txDate: string | null; sp2dDate: string | null; desc: string;
+  subName: string; subCode: string; accName: string; accCode: string; funding: string; method: string; pptk: string; supplier: string;
+  amount: number;
+  /** Galat bentuk (tanggal/nominal tak terbaca) ditemukan saat mengurai. */
+  parseError?: string;
+}
+export interface Recap { byMethod: { name: string; count: number; amount: number }[]; total: { count: number; amount: number } | null }
+export type ParsedReport = { ok: true; rows: RawRow[]; recap: Recap | null } | { ok: false; error: string };
+
+export function parseRealizationReport(table: string[][]): ParsedReport {
+  let hi = -1;
+  let idx: Partial<Record<Col, number>> = {};
+  for (let i = 0; i < table.length; i++) {
+    const h = table[i]!.map(normHeader);
+    const found: Partial<Record<Col, number>> = {};
+    for (const c of Object.keys(ALIASES) as Col[]) for (const a of ALIASES[c]) { const k = h.indexOf(a); if (k !== -1) { found[c] = k; break; } }
+    if (found.txDate !== undefined && found.amount !== undefined) { hi = i; idx = found; break; }
+  }
+  if (hi === -1) return { ok: false, error: 'Baris judul tabel tidak ditemukan. Pastikan ada kolom "Tgl Transaksi" dan "Nominal (Rp)".' };
+  const missing: string[] = [];
+  if (idx.subName === undefined && idx.subCode === undefined) missing.push("Sub Kegiatan");
+  if (idx.accName === undefined && idx.accCode === undefined) missing.push("Nama Belanja");
+  if (idx.funding === undefined) missing.push("Sumber Dana");
+  if (missing.length) return { ok: false, error: `Kolom wajib tidak ditemukan: ${missing.join(", ")}.` };
+
+  const cell = (r: string[], c: Col) => (idx[c] === undefined ? "" : (r[idx[c]!] ?? "").trim());
+  const rows: RawRow[] = [];
+  for (let i = hi + 1; i < table.length; i++) {
+    const r = table[i]!;
+    const no = cell(r, "no");
+    // Baris data: bernomor (bila ada kolom No) atau memuat tanggal transaksi; baris lain (catatan kaki) diabaikan.
+    const isData = idx.no !== undefined ? /^\d+$/.test(no) : cell(r, "txDate") !== "";
+    if (!isData) continue;
+    const tx = parseDateFlexible(cell(r, "txDate"));
+    const sp = parseDateFlexible(cell(r, "sp2dDate"));
+    const amount = parseMoney(cell(r, "amount"));
+    const errs: string[] = [];
+    if (tx === undefined) errs.push(`tanggal transaksi "${cell(r, "txDate")}" tidak terbaca (gunakan dd/mm/yyyy)`);
+    if (sp === undefined) errs.push(`tanggal SP2D "${cell(r, "sp2dDate")}" tidak terbaca (gunakan dd/mm/yyyy)`);
+    if (!Number.isFinite(amount)) errs.push(`nominal "${cell(r, "amount")}" tidak terbaca`);
+    rows.push({
+      line: i + 1, no, txDate: tx ?? null, sp2dDate: sp ?? null, desc: cleanText(cell(r, "desc")).slice(0, 500),
+      subName: cleanText(cell(r, "subName")), subCode: cleanText(cell(r, "subCode")), accName: cleanText(cell(r, "accName")), accCode: cleanText(cell(r, "accCode")),
+      funding: cleanText(cell(r, "funding")), method: cleanText(cell(r, "method")), pptk: cleanText(cell(r, "pptk")), supplier: cleanText(cell(r, "supplier")),
+      amount: Number.isFinite(amount) ? amount : 0, parseError: errs.length ? errs.join("; ") : undefined,
+    });
+  }
+  if (rows.length === 0) return { ok: false, error: "Tidak ada baris transaksi pada berkas." };
+  return { ok: true, rows, recap: parseRecap(table.slice(0, hi)) };
+}
+
+/** Blok rekap di atas rincian: baris [Metode, Jumlah, Persen, Total Nominal] + baris TOTAL. null bila tidak ada. */
+function parseRecap(top: string[][]): Recap | null {
+  const hi = top.findIndex((r) => r.some((c) => normHeader(c) === "metode_pemilihan") && r.some((c) => /jumlah/i.test(c)));
+  if (hi === -1) return null;
+  const head = top[hi]!.map(normHeader);
+  const ci = head.findIndex((h) => h.startsWith("jumlah"));
+  const ai = head.findIndex((h) => h.startsWith("total_nominal") || h === "nominal");
+  if (ci === -1 || ai === -1) return null;
+  const byMethod: Recap["byMethod"] = [];
+  let total: Recap["total"] = null;
+  for (const r of top.slice(hi + 1)) {
+    const name = cleanText(r[0] ?? "");
+    if (!name) continue;
+    const count = Number((r[ci] ?? "").replace(/\D/g, ""));
+    const amount = parseMoney(r[ai] ?? "");
+    if (!Number.isFinite(count) || !Number.isFinite(amount)) continue;
+    if (name.toLowerCase() === "total") total = { count, amount }; else byMethod.push({ name, count, amount });
+  }
+  return byMethod.length || total ? { byMethod, total } : null;
+}
+
+export interface Reconciliation { ok: boolean; notes: string[] }
+const cents = (n: number) => Math.round(n * 100);
+
+/** Mencocokkan rekap di berkas dengan hasil penguraian rincian (jumlah & nominal total serta per metode). */
+export function reconcileRecap(rows: RawRow[], recap: Recap | null): Reconciliation {
+  if (!recap) return { ok: true, notes: ["Berkas tidak memuat rekap; rekonsiliasi dilewati."] };
+  const notes: string[] = [];
+  const sum = rows.reduce((a, r) => a + cents(r.amount), 0);
+  if (recap.total) {
+    if (recap.total.count !== rows.length) notes.push(`Jumlah transaksi pada rekap ${recap.total.count}, pada rincian ${rows.length}.`);
+    if (cents(recap.total.amount) !== sum) notes.push(`Total nominal pada rekap ${recap.total.amount.toLocaleString("id-ID")}, pada rincian ${(sum / 100).toLocaleString("id-ID")}.`);
+  }
+  for (const m of recap.byMethod) {
+    const mine = rows.filter((r) => normName(r.method) === normName(m.name));
+    const amt = mine.reduce((a, r) => a + cents(r.amount), 0);
+    if (mine.length !== m.count || amt !== cents(m.amount)) notes.push(`Metode "${m.name}": rekap ${m.count} transaksi / ${m.amount.toLocaleString("id-ID")}, rincian ${mine.length} / ${(amt / 100).toLocaleString("id-ID")}.`);
+  }
+  return notes.length ? { ok: false, notes } : { ok: true, notes: [`Rekap cocok dengan rincian: ${rows.length} transaksi, total ${(sum / 100).toLocaleString("id-ID")}.`] };
+}
+
+/* ------------------------------------------------------------------ tahapan berdasarkan tanggal DPA ------------------------------------------------------------------ */
+
+export type StageCode = "murni" | "pergeseran" | "perubahan";
+export interface StageVersion { id: string; stage: StageCode; versionNo: number; status: string; dpaDate: string | null }
+const SEQ: Record<StageCode, number> = { murni: 1, pergeseran: 2, perubahan: 3 };
+const NAME: Record<StageCode, string> = { murni: "Murni", pergeseran: "Pergeseran", perubahan: "Perubahan" };
+const ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"];
+
+export function versionLabel(v: StageVersion, all: StageVersion[]): string {
+  const peers = all.filter((p) => p.stage === v.stage).sort((a, b) => a.versionNo - b.versionNo);
+  const rank = peers.findIndex((p) => p.id === v.id) + 1;
+  return v.stage === "pergeseran" || peers.length > 1 ? `${NAME[v.stage]} ${ROMAN[rank - 1] ?? rank}` : NAME[v.stage];
+}
+
+/**
+ * Cermin persis dari public.stage_version_for_date (migrasi 0014): versi ber-DPA dengan tanggal DPA terbesar yang <= tanggal
+ * (sama tanggal: Murni < Pergeseran < Perubahan, lalu nomor versi); bila belum ada DPA yang berlaku -> versi Murni (effective=false).
+ * Versi draf ikut dipertimbangkan agar tidak diam-diam jatuh ke tahapan sebelumnya; pemanggil menolak versi draf.
+ */
+export function stageForDate(versions: StageVersion[], date: string): { version: StageVersion | null; effective: boolean } {
+  const key = (v: StageVersion) => `${v.dpaDate}|${SEQ[v.stage]}|${String(v.versionNo).padStart(5, "0")}`;
+  const eff = versions.filter((v) => v.dpaDate && v.dpaDate <= date).sort((a, b) => (key(a) < key(b) ? 1 : -1))[0];
+  if (eff) return { version: eff, effective: true };
+  const murni = versions.filter((v) => v.stage === "murni").sort((a, b) => b.versionNo - a.versionNo)[0] ?? null;
+  return { version: murni, effective: false };
+}
+
+/* ------------------------------------------------------------------ pencocokan & validasi ------------------------------------------------------------------ */
+
+export interface BudgetItemRef { id: string; subId: string; accId: string; fundId: string; pptkId: string | null; description: string | null; hasRup: boolean }
+export interface MasterMaps {
+  look: Lookups;                               // sub/akun menurut KODE + sumber dana + PPTK
+  subsByName: Map<string, string[]>;           // nama (normal) -> id[]
+  accsByName: Map<string, string[]>;
+  items: BudgetItemRef[];
+  itemsInVersion: Map<string, Set<string>>;    // versionId -> itemId
+  paguByVersionItem: Map<string, { pagu: number; used: number }>; // "versionId|itemId" -> pagu & terpakai (realisasi sah + menunggu SP2D)
+}
+export interface PlanOptions {
+  versions: StageVersion[]; year: number; today: string; basis: "transaksi" | "sp2d";
+  /** Pengguna: Admin boleh semua butir; PPTK hanya butirnya. */
+  userId: string; isAdmin: boolean;
+  existingKeys: Set<string>;
+  /** Transaksi aktif yang sudah ada: "itemId|tanggal|sen" -> jumlah (deteksi input manual yang sama). */
+  existingSimilar: Set<string>;
+  includeSimilar: boolean;
+}
+
+export type RowStatus = "baru" | "ada" | "mirip" | "galat";
+export interface PlannedRow {
+  index: number; line: number; no: string; status: RowStatus; message: string;
+  txDate: string | null; sp2dDate: string | null; amount: number; desc: string;
+  sub: string; account: string; funding: string; pptk: string; method: string;
+  itemId?: string; versionId?: string; stageLabel?: string; stage?: StageCode; importKey?: string;
+  /** Tanggal transaksi dan SP2D jatuh pada tahapan berbeda (lintas DPA). */
+  straddle?: boolean; notes: string[];
+}
+export interface StageTally { label: string; stage: StageCode; versionId: string; dpaDate: string | null; count: number; amount: number }
+export interface PlanOutcome {
+  rows: PlannedRow[]; counts: Record<RowStatus, number>; total: { count: number; amount: number };
+  byStage: StageTally[]; straddle: number; problems: string[];
+}
+
+const uniq = (m: Map<string, string[]>, k: string): string | null | undefined => { const v = m.get(k); return !v ? undefined : v.length === 1 ? v[0]! : null; };
+
+/** Kunci bahan identitas baris (di-hash di sisi server): butir + tanggal transaksi + nilai + urutan kemunculan identik dalam berkas. */
+export const keyMaterial = (itemId: string, txDate: string, amount: number, occurrence: number) => `${itemId}|${txDate}|${cents(amount)}|${occurrence}`;
+
+export function planRealizationImport(raw: RawRow[], maps: MasterMaps, opt: PlanOptions): PlanOutcome {
+  const rows: PlannedRow[] = [];
+  const problems: string[] = [];
+  const occ = new Map<string, number>();
+  const running = new Map<string, number>(); // "versionId|itemId" -> tambahan dari berkas ini
+
+  raw.forEach((r, index) => {
+    const base = {
+      index, line: r.line, no: r.no, txDate: r.txDate, sp2dDate: r.sp2dDate, amount: r.amount, desc: r.desc,
+      sub: r.subName || r.subCode, account: r.accName || r.accCode, funding: r.funding, pptk: r.pptk, method: r.method, notes: [] as string[],
+    };
+    const fail = (msg: string, extra: Partial<PlannedRow> = {}) => {
+      problems.push(`Baris ${r.no || r.line}: ${msg}`);
+      rows.push({ ...base, ...extra, status: "galat", message: msg });
+    };
+    if (r.parseError) return fail(r.parseError);
+
+    // --- tanggal & nilai (sama dengan aturan basis data) ---
+    if (!r.txDate) return fail("tanggal transaksi kosong");
+    if (Number(r.txDate.slice(0, 4)) !== opt.year) return fail(`tanggal transaksi ${r.txDate} di luar tahun anggaran ${opt.year}`);
+    if (r.txDate > opt.today) return fail(`tanggal transaksi ${r.txDate} melebihi hari ini`);
+    if (r.sp2dDate) {
+      if (Number(r.sp2dDate.slice(0, 4)) !== opt.year) return fail(`tanggal SP2D ${r.sp2dDate} di luar tahun anggaran ${opt.year}`);
+      if (r.sp2dDate > opt.today) return fail(`tanggal SP2D ${r.sp2dDate} melebihi hari ini`);
+      if (r.txDate > r.sp2dDate) return fail(`tanggal transaksi ${r.txDate} setelah tanggal SP2D ${r.sp2dDate} (periksa salah ketik tanggal)`);
+    }
+    if (!(r.amount > 0)) return fail("nominal harus lebih dari nol");
+    if (Math.abs(r.amount * 100 - Math.round(r.amount * 100)) > 1e-6) return fail("nominal maksimal dua desimal");
+
+    // --- sub kegiatan, belanja, sumber dana, PPTK ---
+    let subId: string | null | undefined = r.subCode ? maps.look.subs.get(r.subCode.toLowerCase()) : undefined;
+    if (!subId && r.subName) subId = uniq(maps.subsByName, normName(r.subName));
+    if (!subId) return fail(subId === null ? `sub kegiatan "${r.subName}" ambigu (nama sama pada beberapa kode); isi kolom kode_sub_kegiatan` : `sub kegiatan "${r.subName || r.subCode}" tidak ditemukan di Data Master`);
+    let accId: string | null | undefined = r.accCode ? maps.look.accounts.get(r.accCode.toLowerCase()) : undefined;
+    if (!accId && r.accName) accId = uniq(maps.accsByName, normName(r.accName));
+    if (!accId) return fail(accId === null ? `belanja "${r.accName}" ambigu; isi kolom kode_rekening` : `belanja "${r.accName || r.accCode}" tidak ditemukan di Data Master`);
+    const fundId = maps.look.fundingByCode.get(r.funding.toLowerCase()) ?? maps.look.fundingByName.get(normName(r.funding));
+    if (!fundId) return fail(`sumber dana "${r.funding}" tidak ditemukan di Data Master`);
+    let pptkId: string | null = null;
+    if (r.pptk) { const p = resolvePptk(r.pptk, maps.look); if (!p.ok) return fail(p.reason); pptkId = p.id; }
+
+    // --- butir anggaran ---
+    let cand = maps.items.filter((i) => !i.hasRup && i.subId === subId && i.accId === accId && i.fundId === fundId);
+    if (cand.length === 0) return fail("butir anggaran (sub kegiatan + belanja + sumber dana) belum ada di Input Anggaran");
+    if (pptkId) {
+      const mine = cand.filter((i) => i.pptkId === pptkId);
+      if (mine.length === 0) return fail(`butir ini ditugaskan ke PPTK lain, bukan "${r.pptk}"; samakan penugasan PPTK di Input Anggaran atau perbaiki berkas`);
+      cand = mine;
+    }
+    if (cand.length > 1) return fail(`butir ambigu (${cand.length} butir dengan sub kegiatan + belanja + sumber dana${pptkId ? " + PPTK" : ""} yang sama); isi kolom PPTK atau bedakan uraian butir`);
+    const item = cand[0]!;
+    if (!opt.isAdmin && item.pptkId !== opt.userId) return fail("bukan butir penugasan Anda (hanya Admin yang dapat mengimpor untuk semua PPTK)", { itemId: item.id });
+    if (!item.pptkId) return fail("butir belum memiliki PPTK penugasan", { itemId: item.id });
+
+    // --- tahapan menurut tanggal DPA ---
+    const stageDate = opt.basis === "sp2d" && r.sp2dDate ? r.sp2dDate : r.txDate;
+    const st = stageForDate(opt.versions, stageDate);
+    if (!st.version) return fail(`belum ada versi anggaran untuk tanggal ${stageDate}`);
+    const label = versionLabel(st.version, opt.versions);
+    if (st.version.status === "draft") return fail(`tahapan ${label} untuk tanggal ${stageDate} masih berstatus draf; aktifkan/tetapkan versinya lebih dulu`, { itemId: item.id });
+    const inV = maps.itemsInVersion.get(st.version.id);
+    if (!inV || !inV.has(item.id)) return fail(`butir tidak ada pada tahapan ${label} (tanggal ${stageDate}); tambahkan butir pada versi tersebut atau periksa tanggal`, { itemId: item.id, stageLabel: label });
+    const other = opt.basis === "sp2d" ? r.txDate : r.sp2dDate;
+    const otherSt = other ? stageForDate(opt.versions, other).version : null;
+    const straddle = !!(otherSt && otherSt.id !== st.version.id);
+    const notes: string[] = [];
+    if (!st.effective) notes.push("tanggal sebelum DPA pertama berlaku; dimasukkan ke Murni");
+    if (straddle) notes.push(`transaksi dan SP2D berbeda tahapan (${opt.basis === "sp2d" ? "tanggal transaksi" : "tanggal SP2D"} jatuh pada ${versionLabel(otherSt!, opt.versions)})`);
+
+    // --- idempotensi & kemiripan ---
+    const o = (occ.get(`${item.id}|${r.txDate}|${cents(r.amount)}`) ?? 0) + 1;
+    occ.set(`${item.id}|${r.txDate}|${cents(r.amount)}`, o);
+    const material = keyMaterial(item.id, r.txDate, r.amount, o);
+    const common = { ...base, notes, itemId: item.id, versionId: st.version.id, stageLabel: label, stage: st.version.stage, importKey: material, straddle };
+
+    if (opt.existingKeys.has(material)) { rows.push({ ...common, status: "ada", message: "Sudah pernah diimpor (kunci sama); dilewati" }); return; }
+    if (!opt.includeSimilar && opt.existingSimilar.has(`${item.id}|${r.txDate}|${cents(r.amount)}`)) {
+      rows.push({ ...common, status: "mirip", message: "Sudah ada transaksi dengan butir, tanggal, dan nilai yang sama (mungkin input manual); dilewati" });
+      return;
+    }
+
+    // --- pagu (pemeriksaan awal; basis data tetap menegakkan) ---
+    const pk = `${st.version.id}|${item.id}`;
+    const pv = maps.paguByVersionItem.get(pk);
+    if (pv) {
+      const add = running.get(pk) ?? 0;
+      const sisa = pv.pagu - pv.used - add;
+      if (cents(r.amount) > cents(sisa)) return fail(`melebihi sisa pagu butir pada ${label} (sisa ${Math.max(0, sisa).toLocaleString("id-ID")}, nilai ${r.amount.toLocaleString("id-ID")})`, { itemId: item.id, stageLabel: label, versionId: st.version.id });
+      running.set(pk, add + r.amount);
+    }
+    rows.push({ ...common, status: "baru", message: r.sp2dDate ? "Realisasi sah (ber-SP2D)" : "Belum SP2D (menunggu tanggal SP2D)" });
+  });
+
+  const counts: Record<RowStatus, number> = { baru: 0, ada: 0, mirip: 0, galat: 0 };
+  const stageMap = new Map<string, StageTally>();
+  let totalAmt = 0;
+  for (const r of rows) {
+    counts[r.status]++;
+    if (r.status === "baru" && r.versionId && r.stage && r.stageLabel) {
+      const t = stageMap.get(r.versionId) ?? { label: r.stageLabel, stage: r.stage, versionId: r.versionId, dpaDate: opt.versions.find((v) => v.id === r.versionId)?.dpaDate ?? null, count: 0, amount: 0 };
+      t.count++; t.amount += cents(r.amount) / 100; stageMap.set(r.versionId, t);
+      totalAmt += cents(r.amount);
+    }
+  }
+  const byStage = [...stageMap.values()].sort((a, b) => SEQ[a.stage] - SEQ[b.stage] || (a.dpaDate ?? "").localeCompare(b.dpaDate ?? ""));
+  return { rows, counts, total: { count: counts.baru, amount: totalAmt / 100 }, byStage, straddle: rows.filter((r) => r.status === "baru" && r.straddle).length, problems };
+}
+
+/* ------------------------------------------------------------------ metode pengadaan ------------------------------------------------------------------ */
+
+export interface MethodRef { id: string; code: string; name: string }
+export interface MethodGuess { fileName: string; count: number; amount: number; resolvedId: string | null; candidates: MethodRef[] }
+
+/** Nama metode berkas -> metode master: persis; atau awalan unik ("e-Purchasing" -> "E-Purchasing (Katalog Elektronik)"); ambigu/tidak ada -> null + kandidat. */
+export function guessMethods(rows: { method: string; amount: number }[], methods: MethodRef[]): MethodGuess[] {
+  const by = new Map<string, { count: number; amount: number; name: string }>();
+  for (const r of rows) {
+    if (!r.method) continue;
+    const k = normName(r.method);
+    const e = by.get(k) ?? { count: 0, amount: 0, name: r.method };
+    e.count++; e.amount += r.amount; by.set(k, e);
+  }
+  const out: MethodGuess[] = [];
+  for (const [k, e] of by) {
+    const exact = methods.filter((m) => normName(m.name) === k || normName(m.code) === k);
+    const prefix = methods.filter((m) => normName(m.name).startsWith(k));
+    const pick = exact.length === 1 ? exact : exact.length === 0 && prefix.length === 1 ? prefix : [];
+    out.push({ fileName: e.name, count: e.count, amount: Math.round(e.amount * 100) / 100, resolvedId: pick[0]?.id ?? null, candidates: prefix.length > 1 ? prefix : [] });
+  }
+  return out.sort((a, b) => b.count - a.count);
+}
+
+/* ------------------------------------------------------------------ keadaan antarmuka ------------------------------------------------------------------ */
+
+export interface RealizationImportState {
+  phase?: "idle" | "preview" | "done" | "error";
+  error?: string;
+  fileName?: string;
+  reconcile?: Reconciliation;
+  counts?: Record<RowStatus, number>;
+  total?: { count: number; amount: number };
+  byStage?: StageTally[];
+  straddle?: number;
+  versions?: { label: string; dpaDate: string | null; status: string }[];
+  methods?: MethodGuess[];
+  methodOptions?: MethodRef[];
+  canCreateMethods?: boolean;
+  rows?: PlannedRow[];
+  truncated?: boolean;
+  applied?: { imported: number; skipped: number; gagal: string[]; batchId: string | null; amount: number };
+}
