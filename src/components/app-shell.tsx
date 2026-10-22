@@ -35,8 +35,15 @@ function initials(name: string) {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]!.toUpperCase()).join("") || "U";
 }
 
-export function AppShell({ user, context, items, badges = {}, children }: Props) {
+export function AppShell({ user, context, items, badges: initialBadges = {}, children }: Props) {
   const pathname = usePathname();
+  const [badges, setBadges] = useState<Record<string, number>>(initialBadges);
+  // Lencana dimuat di latar setelah halaman tampil (dan disegarkan saat pindah menu); gagal = diabaikan.
+  useEffect(() => {
+    let live = true;
+    fetch("/nav-badges", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).then((j) => { if (live && j && typeof j === "object") setBadges(j as Record<string, number>); }).catch(() => {});
+    return () => { live = false; };
+  }, [pathname]);
   const [collapsed, setCollapsed] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const [palette, setPalette] = useState(false);

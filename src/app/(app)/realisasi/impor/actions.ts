@@ -10,8 +10,8 @@ import { readTable } from "@/lib/spreadsheet";
 import { todayWIB } from "@/lib/quarterly-core";
 import { normName, resolvePptk, type Lookups } from "@/lib/budget-import-core";
 import {
-  guessMethods, parseRealizationReport, planRealizationImport, reconcileRecap, versionLabel,
-  type BudgetItemRef, type MasterMaps, type PlanOptions, type RealizationImportState, type StageVersion,
+  guessMethods, matchName, parseRealizationReport, planRealizationImport, reconcileRecap, versionLabel,
+  type BudgetItemRef, type MasterMaps, type NameEntry, type PlanOptions, type RawRow, type RealizationImportState, type StageVersion, type UnresolvedName,
 } from "@/lib/realization-import-core";
 
 const cents = (n: number) => Math.round(n * 100);
@@ -37,8 +37,9 @@ export async function importRealizationAction(_prev: RealizationImportState, fd:
   if (!read.ok) return { phase: "error", error: read.error };
   const parsed = parseRealizationReport((read as { rows: string[][] }).rows);
   if (!parsed.ok) return { phase: "error", error: parsed.error };
-  if (parsed.rows.length > 3000) return { phase: "error", error: "Maksimal 3.000 baris per impor." };
-  const reconcile = reconcileRecap(parsed.rows, parsed.recap);
+  const allRows: RawRow[] = parsed.rows;
+  if (allRows.length > 3000) return { phase: "error", error: "Maksimal 3.000 baris per impor." };
+  const reconcile = reconcileRecap(allRows, parsed.recap);
 
   const supabase = await userClient();
   const { data: cv } = await supabase.from("budget_versions").select("fiscal_year_id").eq("id", context.versionId).maybeSingle();
@@ -91,15 +92,57 @@ export async function importRealizationAction(_prev: RealizationImportState, fd:
   const itemsInVersion = new Map<string, Set<string>>();
   for (const b of bivRes.rows) { const s = itemsInVersion.get(b.budget_version_id) ?? new Set<string>(); s.add(b.budget_item_id); itemsInVersion.set(b.budget_version_id, s); }
 
+  // ---------- pencocokan nama (otomatis + pemetaan manual dari pengguna) ----------
+  let userMap: Record<string, string> = {};
+  try { const j = JSON.parse(str(fd, "nameMap", 60000) || "{}"); if (j && typeof j === "object") userMap = j as Record<string, string>; } catch { /* abaikan */ }
+  const subMap = byName(subs), accMap = byName(accts);
+  const entries = {
+    sub: subs.map((r) => ({ id: r.id as string, name: String(r.name), code: String(r.code) })) as NameEntry[],
+    acc: accts.map((r) => ({ id: r.id as string, name: String(r.name), code: String(r.code) })) as NameEntry[],
+    fund: funds.map((r) => ({ id: r.id as string, name: String(r.name), code: String(r.code) })) as NameEntry[],
+    pptk: pptk.map((p) => ({ id: p.id, name: p.fullName, code: p.username })) as NameEntry[],
+  };
+  const label = (k: "sub" | "acc" | "fund" | "pptk", e: NameEntry) => (k === "sub" || k === "acc" ? `${e.code} — ${e.name}` : k === "fund" ? `${e.name} (${e.code})` : `${e.name}`);
+  const valid = (k: "sub" | "acc" | "fund" | "pptk", id: string | undefined) => !!id && entries[k].some((e) => e.id === id);
+  const unresolved: UnresolvedName[] = [];
+  const resolveKind = (k: "sub" | "acc" | "fund" | "pptk", names: { name: string; count: number }[], apply: (norm: string, raw: string, id: string) => void, alreadyOk: (raw: string) => boolean) => {
+    for (const { name, count } of names) {
+      if (!name) continue;
+      const mapKey = `${k}|${normName(name)}`;
+      if (valid(k, userMap[mapKey])) { apply(normName(name), name, userMap[mapKey]!); continue; }
+      if (alreadyOk(name)) continue;
+      const m = matchName(name, entries[k]);
+      if (m.id) { apply(normName(name), name, m.id); continue; }
+      unresolved.push({ kind: k, name, count, suggestions: m.suggestions.map((e) => ({ id: e.id, label: label(k, e) })), options: entries[k].map((e) => ({ id: e.id, label: label(k, e) })) });
+    }
+  };
+  const tally = (pick: (r: RawRow) => string) => {
+    const m = new Map<string, { name: string; count: number }>();
+    for (const r of allRows) { const n = pick(r); if (!n) continue; const e = m.get(normName(n)) ?? { name: n, count: 0 }; e.count++; m.set(normName(n), e); }
+    return [...m.values()];
+  };
+  const byNameSub = new Map(subMap), byNameAcc = new Map(accMap);
+  // PPTK (hanya Admin yang memerlukan pemetaan; PPTK biasa hanya diproses barisnya sendiri di bawah)
+  resolveKind("pptk", tally((r) => r.pptk), (_n, raw, id) => look.pptkByUsername.set(raw.toLowerCase(), id), (raw) => resolvePptk(raw, look).ok);
+  if (!isAdmin) unresolved.splice(0, unresolved.length); // tidak relevan bagi PPTK biasa
+
   // ---------- PPTK biasa: hanya barisnya sendiri diproses ----------
-  let rows = parsed.rows;
+  let rows: RawRow[] = allRows;
   let ignoredOthers = 0;
   if (!isAdmin) {
-    const mine = rows.filter((r) => { if (!r.pptk) return false; const p = resolvePptk(r.pptk, { ...look, pptk: look.pptk.filter((x) => x.id === user.id), pptkByUsername: new Map([[user.username.toLowerCase(), user.id]]) }); return p.ok; });
+    const mine = rows.filter((r) => { if (!r.pptk) return false; const p = resolvePptk(r.pptk, look); return p.ok && p.id === user.id; });
     ignoredOthers = rows.length - mine.length;
     rows = mine;
     if (rows.length === 0) return { phase: "error", error: `Tidak ada baris atas nama PPTK Anda (${user.fullName}) pada berkas. ${ignoredOthers} baris milik PPTK lain diabaikan.` };
   }
+  const tallyRows = (pick: (r: RawRow) => string) => {
+    const m = new Map<string, { name: string; count: number }>();
+    for (const r of rows) { const n = pick(r); if (!n) continue; const e = m.get(normName(n)) ?? { name: n, count: 0 }; e.count++; m.set(normName(n), e); }
+    return [...m.values()];
+  };
+  resolveKind("sub", tallyRows((r) => (r.subCode ? "" : r.subName)), (n, _raw, id) => byNameSub.set(n, [id]), (raw) => (subMap.get(normName(raw))?.length ?? 0) === 1);
+  resolveKind("acc", tallyRows((r) => (r.accCode ? "" : r.accName)), (n, _raw, id) => byNameAcc.set(n, [id]), (raw) => (accMap.get(normName(raw))?.length ?? 0) === 1);
+  resolveKind("fund", tallyRows((r) => r.funding), (n, _raw, id) => look.fundingByName.set(n, id), (raw) => look.fundingByCode.has(raw.toLowerCase()) || look.fundingByName.has(normName(raw)));
 
   // ---------- saldo pagu (pemeriksaan awal) ----------
   const itemIds = items.map((i) => i.id);
@@ -109,7 +152,7 @@ export async function importRealizationAction(_prev: RealizationImportState, fd:
       supabase.from("v_budget_balance").select("budget_version_id, budget_item_id, pagu, eligible_realization, pending_sp2d").in("budget_version_id", versionIds).order("budget_item_id").range(from, to));
     for (const b of bal.rows) paguByVersionItem.set(`${b.budget_version_id}|${b.budget_item_id}`, { pagu: Number(b.pagu), used: Number(b.eligible_realization) + Number(b.pending_sp2d) });
   }
-  const maps: MasterMaps = { look, subsByName: byName(subs), accsByName: byName(accts), items, itemsInVersion, paguByVersionItem };
+  const maps: MasterMaps = { look, subsByName: byNameSub, accsByName: byNameAcc, items, itemsInVersion, paguByVersionItem };
 
   // ---------- rencana: dua tahap (1: kumpulkan kunci; 2: hitung ulang dengan data yang sudah ada) ----------
   const basePlan: Omit<PlanOptions, "existingKeys" | "existingSimilar"> = { versions, year, today: todayWIB(new Date()), basis, userId: user.id, isAdmin, includeSimilar };
@@ -145,8 +188,18 @@ export async function importRealizationAction(_prev: RealizationImportState, fd:
   };
   const guessesOut = guesses.map((g) => ({ ...g, resolvedId: methodFor(g.fileName) === "__buat__" ? "__buat__" : methodFor(g.fileName) }));
 
+  // Butir anggaran yang dibutuhkan tetapi belum ada (untuk diunduh sebagai daftar siap-isi pagu di Input Anggaran).
+  const codeOf = (list: { id: unknown; code: unknown }[]) => new Map(list.map((r) => [r.id as string, String(r.code)]));
+  const subCode = codeOf(subs), accCode = codeOf(accts), fundName = new Map(funds.map((r) => [r.id as string, String(r.name)])), pptkName = new Map(pptk.map((p) => [p.id, p.fullName]));
+  const need = new Map<string, { subCode: string; accCode: string; fund: string; pptk: string; rows: number; total: number }>();
+  for (const r of plan.rows) {
+    if (!r.missingItem) continue;
+    const k = `${r.missingItem.subId}|${r.missingItem.accId}|${r.missingItem.fundId}|${r.missingItem.pptkId ?? ""}`;
+    const e = need.get(k) ?? { subCode: subCode.get(r.missingItem.subId) ?? "", accCode: accCode.get(r.missingItem.accId) ?? "", fund: fundName.get(r.missingItem.fundId) ?? "", pptk: r.missingItem.pptkId ? pptkName.get(r.missingItem.pptkId) ?? r.pptk : r.pptk, rows: 0, total: 0 };
+    e.rows++; e.total = Math.round((e.total + r.amount) * 100) / 100; need.set(k, e);
+  }
   const view = {
-    fileName: file.name.slice(0, 200), reconcile, counts: plan.counts, total: plan.total, byStage: plan.byStage, straddle: plan.straddle,
+    fileName: file.name.slice(0, 200), reconcile, reasons: plan.reasons, unresolved, neededItems: [...need.values()], counts: plan.counts, total: plan.total, byStage: plan.byStage, straddle: plan.straddle,
     versions: versions.sort((a, b) => (a.dpaDate ?? "9").localeCompare(b.dpaDate ?? "9")).map((v) => ({ label: versionLabel(v, versions), dpaDate: v.dpaDate, status: v.status })),
     methods: guessesOut, methodOptions: methodRefs, canCreateMethods,
     rows: plan.rows.slice(0, SHOW), truncated: plan.rows.length > SHOW,

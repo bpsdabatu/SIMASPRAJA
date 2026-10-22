@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, CheckCircle2, XCircle } from "lucide-react";
 import { requireContext } from "@/lib/auth/session";
 import { userClient } from "@/lib/supabase/server";
 import { formatRupiah } from "@/lib/format";
@@ -25,6 +25,23 @@ export default async function ImporRealisasiPage() {
     cv ? supabase.from("realization_import_batches").select("id, file_name, basis, rows_in_file, total_in_file, created_at, profiles:created_by(full_name)").eq("fiscal_year_id", cv.fiscal_year_id).order("created_at", { ascending: false }).limit(15) : Promise.resolve({ data: [] as Batch[], error: null }),
     cv ? supabase.from("realization_transactions").select("import_batch_id").not("import_batch_id", "is", null).limit(10000) : Promise.resolve({ data: [] as { import_batch_id: string }[] }),
   ]);
+  // ---- daftar periksa prasyarat ----
+  const head = (t: string) => supabase.from(t).select("id", { count: "exact", head: true });
+  const [cSub, cAcc, cFund, cPptk, cItems, vers] = await Promise.all([
+    head("sub_activities").eq("is_active", true), head("expenditure_accounts").eq("is_active", true), head("funding_sources").eq("is_active", true),
+    supabase.from("user_roles").select("user_id", { count: "exact", head: true }).eq("role_code", "pptk"),
+    cv ? supabase.from("budget_items").select("id", { count: "exact", head: true }).eq("fiscal_year_id", cv.fiscal_year_id) : Promise.resolve({ count: 0 }),
+    cv ? supabase.from("budget_versions").select("stage_code, version_no, status, dpa_date").eq("fiscal_year_id", cv.fiscal_year_id).order("created_at") : Promise.resolve({ data: [] as { stage_code: string; version_no: number; status: string; dpa_date: string | null }[] }),
+  ]);
+  const nSub = cSub.count ?? 0, nAcc = cAcc.count ?? 0, nFund = cFund.count ?? 0, nPptk = cPptk.count ?? 0, nItems = (cItems as { count: number | null }).count ?? 0;
+  const versions = ((vers as { data: { stage_code: string; version_no: number; status: string; dpa_date: string | null }[] | null }).data ?? []);
+  const dpaOk = versions.some((v) => v.dpa_date);
+  const checks = [
+    { ok: nSub > 0 && nAcc > 0 && nFund > 0, text: `Data Master: ${nSub} sub kegiatan, ${nAcc} rekening belanja, ${nFund} sumber dana`, fix: "/master", fixLabel: "Data Master" },
+    { ok: isAdmin ? nPptk > 0 : true, text: isAdmin ? `Akun PPTK: ${nPptk}` : "Akun PPTK: diperiksa saat unggah", fix: "/master?tab=pptk", fixLabel: "Tambah PPTK" },
+    { ok: nItems > 0, text: `Butir anggaran TA ${context.year}: ${nItems}`, fix: "/anggaran", fixLabel: "Input Anggaran" },
+    { ok: dpaOk, text: versions.length ? `Tanggal DPA: ${versions.map((v) => `${v.stage_code} v${v.version_no} ${v.dpa_date ? v.dpa_date.split("-").reverse().join("/") : "belum diisi"}`).join(" · ")}` : "Belum ada versi anggaran", fix: "/anggaran", fixLabel: "Isi tanggal DPA" },
+  ];
   const perBatch = new Map<string, number>();
   for (const r of (counts.data ?? []) as { import_batch_id: string }[]) perBatch.set(r.import_batch_id, (perBatch.get(r.import_batch_id) ?? 0) + 1);
   const list = ((batches.data ?? []) as unknown as Batch[]);
@@ -36,6 +53,18 @@ export default async function ImporRealisasiPage() {
         description={`Tahun Anggaran ${context.year}. Tahapan (Murni/Pergeseran/Perubahan) ditentukan otomatis dari tanggal penetapan DPA.`}
         actions={<Link href="/realisasi" className="no-print inline-flex items-center gap-1 text-sm font-medium text-navy-700 hover:underline"><ArrowLeft size={14} aria-hidden /> Input Realisasi</Link>}
       />
+      <Card>
+        <CardHeader title="Prasyarat sebelum impor" description={`Konteks yang dibuka: Tahun Anggaran ${context.year}. Semua harus hijau agar baris dapat diterima.`} />
+        <ul className="grid gap-2 p-4 sm:grid-cols-2">
+          {checks.map((c) => (
+            <li key={c.text} className={`flex items-start gap-2 rounded-lg px-3 py-2 text-sm ${c.ok ? "bg-emerald-50 text-emerald-900" : "bg-red-50 text-red-900"}`}>
+              {c.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0" aria-hidden /> : <XCircle size={16} className="mt-0.5 shrink-0" aria-hidden />}
+              <span className="min-w-0 flex-1">{c.text}</span>
+              {!c.ok && <Link href={c.fix} className="shrink-0 text-xs font-semibold underline">{c.fixLabel}</Link>}
+            </li>
+          ))}
+        </ul>
+      </Card>
       <Card>
         <CardHeader title="Unggah laporan realisasi" description={isAdmin ? "Admin dapat mengimpor untuk semua PPTK. Setiap unggahan tercatat sebagai batch (berkas, pelaku, waktu); mengunggah ulang berkas yang sama tidak menggandakan data." : "Hanya baris atas nama PPTK Anda yang diproses; baris PPTK lain diabaikan. Setiap unggahan tercatat sebagai batch."} />
         <div className="p-5"><RealizationImportPanel canCreateMethods={user.permissions.has("master.manage")} /></div>

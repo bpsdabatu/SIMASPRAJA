@@ -2,12 +2,13 @@
 
 import { startTransition, useActionState, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, FileSpreadsheet, Loader2, ScanSearch, Upload } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, Loader2, ScanSearch, Upload } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { Alert } from "@/components/ui/card";
 import { Field, Input, Select } from "@/components/ui/input";
 import { LiveFilter } from "@/components/live-filter";
 import { formatAmount, formatRupiah } from "@/lib/format";
+import { normName } from "@/lib/budget-import-core";
 import type { RealizationImportState, RowStatus } from "@/lib/realization-import-core";
 import { importRealizationAction } from "./actions";
 
@@ -19,12 +20,27 @@ const TONE: Record<RowStatus, { label: string; cls: string }> = {
 };
 const STAGE_BAR: Record<string, string> = { murni: "bg-sky-500", pergeseran: "bg-amber-500", perubahan: "bg-violet-500" };
 const dmy = (d: string | null) => (d ? d.split("-").reverse().join("/") : "—");
+const KIND: Record<string, string> = { sub: "Sub kegiatan", acc: "Belanja", fund: "Sumber dana", pptk: "PPTK" };
+
+/** Daftar butir anggaran yang dibutuhkan (format impor Input Anggaran; pagu sengaja dikosongkan agar wajib diisi sesuai DPA). */
+function downloadNeeded(items: NonNullable<RealizationImportState["neededItems"]>) {
+  const q = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
+  const lines = [["kode_sub_kegiatan", "kode_rekening", "sumber_dana", "pptk", "uraian", "pagu", "info_realisasi_berkas"].join(";")];
+  for (const i of items) lines.push([q(i.subCode), q(i.accCode), q(i.fund), q(i.pptk), "", "", q(`${i.rows} transaksi, total ${i.total}`)].join(";"));
+  const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "butir-anggaran-dibutuhkan.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 
 export function RealizationImportPanel({ canCreateMethods }: { canCreateMethods: boolean }) {
   const [state, dispatch, pending] = useActionState<RealizationImportState, FormData>(importRealizationAction, { phase: "idle" });
   const ref = useRef<HTMLFormElement>(null);
   const [intent, setIntent] = useState<"preview" | "apply">("preview");
   const [methodPick, setMethodPick] = useState<Record<string, string>>({});
+  const [namePick, setNamePick] = useState<Record<string, string>>({});
   const [show, setShow] = useState<"semua" | RowStatus>("semua");
 
   const run = (which: "preview" | "apply") => {
@@ -32,6 +48,7 @@ export function RealizationImportPanel({ canCreateMethods }: { canCreateMethods:
     const fd = new FormData(ref.current);
     fd.set("intent", which);
     fd.set("methodMap", JSON.stringify(methodPick));
+    fd.set("nameMap", JSON.stringify(namePick));
     setIntent(which);
     startTransition(() => dispatch(fd));
   };
@@ -86,6 +103,52 @@ export function RealizationImportPanel({ canCreateMethods }: { canCreateMethods:
               {state.reconcile.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0" aria-hidden /> : <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden />}
               <span>{state.reconcile.notes.join(" ")}</span>
             </p>
+          )}
+
+          {(state.reasons ?? []).length > 0 && (
+            <div className="rounded-lg border border-red-200 bg-red-50/60 p-3">
+              <p className="text-sm font-semibold text-red-800">Mengapa baris ditolak ({c.galat} baris)</p>
+              <ul className="mt-2 space-y-2">
+                {state.reasons!.map((r) => (
+                  <li key={r.code} className="text-sm text-slate-800">
+                    <span className="font-semibold">{r.label}</span> <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">{r.count} baris</span>
+                    <span className="block text-xs text-slate-600">{r.hint}</span>
+                    <span className="block text-xs text-slate-500">Contoh — {r.example}</span>
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {(state.neededItems ?? []).length > 0 && (
+                  <button type="button" onClick={() => downloadNeeded(state.neededItems!)} className={buttonVariants({ variant: "outline", size: "sm" })}>
+                    <Download size={14} aria-hidden /> Daftar butir anggaran yang dibutuhkan ({state.neededItems!.length})
+                  </button>
+                )}
+                {state.reasons!.some((r) => r.code === "pptk") && <a href="/master?tab=pptk" className={buttonVariants({ variant: "outline", size: "sm" })}>Buka Data Master › PPTK</a>}
+                {state.reasons!.some((r) => r.code === "tahun") && <a href="/pilih-konteks" className={buttonVariants({ variant: "outline", size: "sm" })}>Ganti konteks tahun</a>}
+              </div>
+            </div>
+          )}
+
+          {(state.unresolved ?? []).length > 0 && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50/60 p-3">
+              <p className="text-sm font-semibold text-amber-900">Cocokkan nama yang belum dikenali</p>
+              <p className="text-xs text-slate-600">Nama berikut ada di berkas tetapi tidak persis sama dengan Data Master. Pilih padanannya, lalu klik “Periksa dulu” lagi.</p>
+              <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                {state.unresolved!.map((u) => {
+                  const key = `${u.kind}|${normName(u.name)}`;
+                  return (
+                    <label key={key} className="text-xs text-slate-600">
+                      <span className="font-medium text-slate-800">{KIND[u.kind]}: {u.name}</span> · {u.count} baris
+                      <Select value={namePick[key] ?? ""} onChange={(e) => setNamePick((p) => ({ ...p, [key]: e.target.value }))} className="mt-1">
+                        <option value="">— Belum dipilih —</option>
+                        {u.suggestions.length > 0 && <optgroup label="Saran terdekat">{u.suggestions.map((o) => <option key={`s${o.id}`} value={o.id}>{o.label}</option>)}</optgroup>}
+                        <optgroup label="Semua">{u.options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</optgroup>
+                      </Select>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
           )}
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
