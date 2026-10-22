@@ -4,6 +4,7 @@ import path from "node:path";
 import { parseCsv } from "../src/lib/csv";
 import { normName, type Lookups } from "../src/lib/budget-import-core";
 import {
+  matchName, summarizeReasons,
   guessMethods, keyMaterial, parseDateFlexible, parseRealizationReport, planRealizationImport, reconcileRecap, stageForDate,
   versionLabel, type BudgetItemRef, type MasterMaps, type StageVersion,
 } from "../src/lib/realization-import-core";
@@ -200,5 +201,47 @@ describe("metode pengadaan", () => {
     expect(by["Pengecualian"]!.resolvedId).toBeNull();
     expect(by["Pengecualian"]!.candidates).toEqual([]);
     expect(by["Swakelola"]!.count).toBe(42);
+  });
+});
+
+describe("pencocokan nama yang toleran", () => {
+  const funds = [{ id: "F1", name: "Pendapatan Asli Daerah", code: "1.1.01" }, { id: "F2", name: "Dana Bagi Hasil Cukai Hasil Tembakau", code: "1.1.02" }];
+  it("singkatan, tanpa tanda baca, dan kode dikenali", () => {
+    expect(matchName("PAD", funds).id).toBe("F1");
+    expect(matchName("DBH CHT", funds).id).toBe("F2");
+    expect(matchName("dbh-cht", funds).id).toBe("F2");
+    expect(matchName("1.1.01", funds).id).toBe("F1");
+    expect(matchName("pendapatan  asli daerah", funds).id).toBe("F1");
+  });
+  it("tidak menebak: tidak ada atau ambigu -> null dengan saran", () => {
+    expect(matchName("DAK Fisik", funds).id).toBeNull();
+    const dup = [{ id: "A", name: "Pajak dan Perizinan" }, { id: "B", name: "Pajak, dan Perizinan" }];
+    const r = matchName("Pajak. dan Perizinan", dup);
+    expect(matchName("pajak dan perizinan", dup).id).toBe("A");
+    expect(r.id).toBeNull();
+    expect(r.suggestions.length).toBe(2);
+    const sub = [{ id: "S", name: "Penyediaan Gaji dan Tunjangan ASN" }, { id: "T", name: "Administrasi Umum" }];
+    expect(matchName("Penyediaan Gaji & Tunjangan ASN", sub).id).toBe("S");
+    expect(matchName("Gaji Tunjangan", sub).suggestions.map((x) => x.id)).toContain("S");
+  });
+});
+
+describe("tanggal serial Excel", () => {
+  it("46045 -> 2026-01-23", () => { expect(parseDateFlexible("46045")).toBe("2026-01-23"); expect(parseDateFlexible("46097")).toBe("2026-03-16"); });
+  it("angka kecil bukan tanggal", () => { expect(parseDateFlexible("123")).toBeUndefined(); });
+});
+
+describe("ringkasan penyebab galat", () => {
+  it("mengelompokkan dan memberi petunjuk", () => {
+    const rows = [
+      { no: "1", line: 1, message: "sumber dana \"PAD\" tidak ditemukan di Data Master" },
+      { no: "2", line: 2, message: "sumber dana \"PAD\" tidak ditemukan di Data Master" },
+      { no: "3", line: 3, message: "butir anggaran (sub kegiatan + belanja + sumber dana) belum ada di Input Anggaran" },
+      { no: "4", line: 4, message: "PPTK \"X\" tidak ditemukan sebagai akun berperan PPTK (buat dulu di Data Master › PPTK)" },
+      { no: "5", line: 5, message: "tanggal transaksi 2026-06-11 setelah tanggal SP2D 2026-06-09" },
+      { no: "6", line: 6, message: "tanggal transaksi 2025-01-01 di luar tahun anggaran 2026" },
+    ];
+    const s = Object.fromEntries(summarizeReasons(rows).map((x) => [x.code, x.count]));
+    expect(s).toEqual({ master: 2, butir: 1, pptk: 1, tanggal: 1, tahun: 1 });
   });
 });
