@@ -19,6 +19,8 @@ const IMP: Record<CashRowStatus, { label: string; cls: string }> = {
 const ADJ: Record<AdjustStatus, { label: string; cls: string }> = {
   salin: { label: "Disalin", cls: "bg-emerald-100 text-emerald-800" },
   kurangi: { label: "Dikecilkan", cls: "bg-amber-100 text-amber-800" },
+  realisasi: { label: "Dari realisasi", cls: "bg-indigo-100 text-indigo-800" },
+  melebihi: { label: "Melebihi pagu", cls: "bg-red-100 text-red-700" },
   terisi: { label: "Dilindungi", cls: "bg-slate-100 text-slate-600" },
   dikunci: { label: "Dikunci", cls: "bg-sky-100 text-sky-800" },
   tanpa_sumber: { label: "Tanpa sumber", cls: "bg-slate-100 text-slate-600" },
@@ -110,7 +112,7 @@ export function CashAdjustPanel({ versionId, sources, defaultSource }: { version
     const fd = new FormData(ref.current); fd.set("intent", which); setIntent(which);
     startTransition(() => dispatch(fd));
   };
-  const n = (state.counts?.salin ?? 0) + (state.counts?.kurangi ?? 0);
+  const n = (state.counts?.salin ?? 0) + (state.counts?.kurangi ?? 0) + (state.counts?.realisasi ?? 0);
   const canApply = state.phase === "preview" && n > 0;
   if (sources.length === 0) return <p className="border-t border-slate-100 p-5 text-sm text-slate-600">Belum ada tahapan lain pada tahun anggaran ini sebagai sumber salinan. Buat versi Pergeseran/Perubahan di Input Anggaran terlebih dahulu.</p>;
   return (
@@ -123,6 +125,12 @@ export function CashAdjustPanel({ versionId, sources, defaultSource }: { version
         <input type="hidden" name="versionId" value={versionId} />
         <Field label="Salin dari tahapan" htmlFor="adj-src">
           <Select id="adj-src" name="sourceVersion" defaultValue={defaultSource}>{sources.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</Select>
+        </Field>
+        <Field label="Cara menyesuaikan" htmlFor="adj-mode" className="sm:col-span-2" hint="Mode realisasi memakai tanggal DPA versi yang dibuka: bulan sebelum bulan DPA dikunci ke realisasi nyata, sisa pagu dibagi ke bulan berikutnya.">
+          <Select id="adj-mode" name="mode" defaultValue="realisasi">
+            <option value="realisasi">Sesuaikan dengan realisasi (disarankan saat pergantian tahapan)</option>
+            <option value="salin">Salin kas tahapan sebelumnya, kecilkan bila pagu turun</option>
+          </Select>
         </Field>
         <label className="flex items-end gap-2 pb-2 text-sm text-slate-700"><input type="checkbox" name="overwrite" value="true" className="h-4 w-4 rounded border-slate-300" /> Timpa isian yang sudah ada (draf/dikembalikan)</label>
         <div className="flex flex-wrap gap-2 sm:col-span-2">

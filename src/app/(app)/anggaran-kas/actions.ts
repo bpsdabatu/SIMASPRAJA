@@ -11,8 +11,8 @@ import { requireModule as requirePerm } from "@/lib/auth/guard";
 import { revalidatePath } from "next/cache";
 import { fetchAll } from "@/lib/fetch-all";
 import {
-  planCashAdjust, planCashImport, resolveCashHeaders,
-  type AdjustSource, type AdjustTarget, type CashAdjustState, type CashImportState, type CashItem, type CashItemStatus,
+  planCashAdjust, planCashFromRealization, planCashImport, resolveCashHeaders,
+  type AdjustSource, type AdjustTarget, type RealizedByItem, type CashAdjustState, type CashImportState, type CashItem, type CashItemStatus,
 } from "@/lib/cash-import-core";
 
 const BACK = "/anggaran-kas";
@@ -255,9 +255,10 @@ export async function adjustCashAction(_prev: CashAdjustState, fd: FormData): Pr
   if (!isUuid(source) || source === context.versionId) return { phase: "error", error: "Pilih tahapan sumber yang berbeda dari versi yang sedang dibuka." };
   const apply = str(fd, "intent", 10) === "apply";
   const overwrite = str(fd, "overwrite", 5) === "true";
+  const mode = str(fd, "mode", 10) === "salin" ? "salin" : "realisasi";
 
   const supabase = await userClient();
-  const { data: vs } = await supabase.from("budget_versions").select("id, fiscal_year_id, stage_code, version_no").in("id", [source, context.versionId]);
+  const { data: vs } = await supabase.from("budget_versions").select("id, fiscal_year_id, stage_code, version_no, dpa_date").in("id", [source, context.versionId]);
   const src = (vs ?? []).find((v) => v.id === source), cur = (vs ?? []).find((v) => v.id === context.versionId);
   if (!src || !cur) return { phase: "error", error: "Versi anggaran tidak ditemukan." };
   if (src.fiscal_year_id !== cur.fiscal_year_id) return { phase: "error", error: "Tahapan sumber harus berasal dari tahun anggaran yang sama." };
@@ -273,12 +274,36 @@ export async function adjustCashAction(_prev: CashAdjustState, fd: FormData): Pr
   const planBefore = new Map(before.plans.rows.map((p) => [p.budget_item_id, p]));
   const srcMap = new Map<string, AdjustSource>(before.items.rows.map((r) => [r.budget_item_id, { pagu: Number(r.pagu), months: planBefore.has(r.budget_item_id) ? monthsOf(planBefore.get(r.budget_item_id)) : null }]));
 
-  const out = planCashAdjust(targets, srcMap, overwrite);
+  let out: ReturnType<typeof planCashAdjust>;
+  if (mode === "realisasi") {
+    const dpa = (cur as { dpa_date?: string | null }).dpa_date;
+    if (!dpa) return { phase: "error", error: "Tanggal DPA versi yang dibuka belum diisi. Isi di Input Anggaran (bagian Versi anggaran), atau pilih mode “Salin kas tahapan sebelumnya”." };
+    const ids = targets.filter((t) => t.mine).map((t) => t.itemId);
+    const realized = new Map<string, RealizedByItem>();
+    if (ids.length) {
+      const rr = await fetchAll<{ budget_item_id: string; amount: string | number; sp2d_date: string | null }>((from, to) =>
+        supabase.from("v_eligible_realization").select("budget_item_id, amount, sp2d_date").in("budget_item_id", ids).not("sp2d_date", "is", null).order("payment_id").range(from, to));
+      if (rr.error) return { phase: "error", error: "Realisasi tidak dapat dimuat. Coba lagi." };
+      const year = Number(dpa.slice(0, 4)), dpaMonth = Number(dpa.slice(5, 7)) - 1;
+      for (const r of rr.rows) {
+        if (!r.sp2d_date || Number(r.sp2d_date.slice(0, 4)) !== year) continue;
+        const e = realized.get(r.budget_item_id) ?? { monthly: Array(12).fill(0) as number[], preDpaMonth: 0 };
+        const m = Number(r.sp2d_date.slice(5, 7)) - 1;
+        const amt = Math.round(Number(r.amount) * 100) / 100;
+        if (m === dpaMonth && r.sp2d_date < dpa) e.preDpaMonth = Math.round((e.preDpaMonth + amt) * 100) / 100;
+        else e.monthly[m] = Math.round((e.monthly[m]! + amt) * 100) / 100;
+        realized.set(r.budget_item_id, e);
+      }
+    }
+    out = planCashFromRealization(targets, srcMap, realized, dpa, overwrite);
+  } else {
+    out = planCashAdjust(targets, srcMap, overwrite);
+  }
   const SHOW = 300;
   const view = { source: `${(src.stage_code as string)} v${src.version_no}`, counts: out.counts, rows: out.rows.slice(0, SHOW), others: out.others, truncated: out.rows.length > SHOW };
   if (!apply) return { phase: "preview", ...view };
 
-  const todo = out.rows.filter((r) => (r.status === "salin" || r.status === "kurangi") && r.months).map((r) => ({ itemId: r.itemId, months: r.months!, label: r.label }));
+  const todo = out.rows.filter((r) => (r.status === "salin" || r.status === "kurangi" || r.status === "realisasi") && r.months).map((r) => ({ itemId: r.itemId, months: r.months!, label: r.label }));
   const res = await saveMany(supabase, context.versionId, todo);
   revalidatePath("/anggaran-kas");
   return { phase: "done", ...view, applied: res };

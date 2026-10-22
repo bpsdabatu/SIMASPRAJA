@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Plus, Search } from "lucide-react";
+import { FileUp, Plus, Search } from "lucide-react";
 import { requireModule } from "@/lib/auth/guard";
 import { userClient } from "@/lib/supabase/server";
 import { loadSuppliersMethods } from "@/lib/lookups";
@@ -94,7 +94,12 @@ export default async function RealisasiPage({ searchParams }: { searchParams: Pr
       <PageHeader
         eyebrow={`TA ${context.year} · ${STAGE_LABEL[context.stage]}`}
         title="Input Realisasi"
-        actions={user.permissions.has("realization.edit") ? <Link href="/realisasi/penyedia" className={buttonVariants({ variant: "outline" })}>Kelola penyedia</Link> : undefined}
+        actions={(user.permissions.has("realization.edit") || user.permissions.has("realization.correct")) ? (
+          <div className="flex flex-wrap gap-2">
+            <Link href="/realisasi/impor" className={buttonVariants({ variant: "accent" })}><FileUp size={15} aria-hidden /> Impor dari berkas</Link>
+            {user.permissions.has("realization.edit") && <Link href="/realisasi/penyedia" className={buttonVariants({ variant: "outline" })}>Kelola penyedia</Link>}
+          </div>
+        ) : undefined}
         description="Realisasi langsung tercatat saat disimpan (isi tanggal transaksi dan tanggal SP2D, tanpa verifikasi). Pencarian pagu, realisasi, dan sisa anggaran per butir ada di menu Rekapitulasi."
       />
       <Flash ok={sp.ok} err={sp.err} />

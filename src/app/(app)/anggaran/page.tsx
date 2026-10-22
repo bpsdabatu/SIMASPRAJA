@@ -132,6 +132,10 @@ export default async function AnggaranPage({ searchParams }: { searchParams: Pro
           title="Versi anggaran"
           description={current ? `Sedang dibuka: ${STAGE_LABEL[current.stage_code]} v${current.version_no} — ${STATUS_LABEL[current.status]}` : undefined}
         />
+        <p className="border-b border-slate-100 px-5 py-2.5 text-xs text-slate-600">
+          <b>Tanggal DPA menentukan tahapan.</b> Transaksi dan SP2D bertanggal sebelum DPA Pergeseran dicatat pada Murni; mulai tanggal DPA Pergeseran masuk Pergeseran; mulai tanggal DPA Perubahan masuk Perubahan.
+          Isi tanggal DPA Perubahan di kolom <i>Tanggal DPA</i> pada versi Perubahan begitu ditetapkan. Urutannya harus Murni &lt; Pergeseran &lt; Perubahan, dan versi harus sudah aktif agar dapat dipakai untuk realisasi.
+        </p>
         <TableWrap>
           <table className="table-base">
             <thead><tr><th>Tahun</th><th>Tahapan</th><th>Versi</th><th>Status</th><th>Tanggal DPA</th><th>Catatan</th>{canEdit && <th className="text-right">Aksi</th>}</tr></thead>
