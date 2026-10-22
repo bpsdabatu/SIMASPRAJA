@@ -27,7 +27,72 @@ export function parseDateFlexible(raw: string): string | null | undefined {
   if (m) return validYmd(Number(m[3]), Number(m[2]), Number(m[1])) ?? undefined;
   m = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ].*)?$/.exec(s);
   if (m) return validYmd(Number(m[1]), Number(m[2]), Number(m[3])) ?? undefined;
+  // Angka serial tanggal Excel (sel berformat Umum): 1 = 1 Jan 1900 (dengan kekeliruan tahun kabisat 1900 milik Excel) -> hari 25569 = 1 Jan 1970.
+  if (/^\d{5}(\.\d+)?$/.test(s)) {
+    const n = Math.floor(Number(s));
+    if (n >= 30000 && n <= 80000) { const d = new Date(Date.UTC(1970, 0, 1) + (n - 25569) * 86400000); return validYmd(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()) ?? undefined; }
+  }
   return undefined;
+}
+
+/* ------------------------------------------------------------------ pencocokan nama yang toleran ------------------------------------------------------------------ */
+
+const STOP = new Set(["dan", "yang", "untuk", "dari", "di", "ke", "pada", "the", "of"]);
+/** Huruf kecil tanpa tanda baca/spasi: "DBH-CHT", "dbh cht", "D.B.H CHT" -> "dbhcht". */
+export const looseKey = (s: string) => s.replace(/&/g, " dan ").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+const words = (s: string) => s.replace(/&/g, " dan ").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+/** Singkatan dari kata-kata nama: "Pendapatan Asli Daerah" -> "pad"; "Dana Bagi Hasil Cukai Hasil Tembakau" -> "dbhcht". */
+const initials = (s: string) => words(s).filter((w) => !STOP.has(w)).map((w) => w[0]).join("");
+
+export interface NameEntry { id: string; name: string; code?: string }
+export interface NameMatch { id: string | null; ambiguous: boolean; suggestions: NameEntry[] }
+
+/**
+ * Mencocokkan nama pada berkas dengan entri master secara bertahap: persis -> tanpa tanda baca/spasi -> kode -> singkatan (PAD = Pendapatan Asli Daerah)
+ * -> salah satu memuat yang lain (tanpa tanda baca; minimal 8 huruf). Hanya mengembalikan id bila hasilnya TEPAT SATU; selain itu null + saran terdekat.
+ */
+export function matchName(raw: string, entries: NameEntry[]): NameMatch {
+  const n = normName(raw), lk = looseKey(raw);
+  if (!lk) return { id: null, ambiguous: false, suggestions: [] };
+  const stages: ((e: NameEntry) => boolean)[] = [
+    (e) => normName(e.name) === n,
+    (e) => looseKey(e.name) === lk,
+    (e) => !!e.code && looseKey(e.code) === lk,
+    (e) => lk.length >= 2 && lk.length <= 8 && initials(e.name) === lk,
+    (e) => lk.length >= 8 && (looseKey(e.name).includes(lk) || lk.includes(looseKey(e.name))) && looseKey(e.name).length >= 8,
+  ];
+  for (const st of stages) {
+    const hit = entries.filter(st);
+    if (hit.length === 1) return { id: hit[0]!.id, ambiguous: false, suggestions: [] };
+    if (hit.length > 1) return { id: null, ambiguous: true, suggestions: hit.slice(0, 6) };
+  }
+  const wa = new Set(words(raw).filter((w) => !STOP.has(w)));
+  const scored = entries.map((e) => { const wb = new Set(words(e.name).filter((w) => !STOP.has(w))); let c = 0; for (const w of wa) if (wb.has(w)) c++; return { e, score: c / Math.max(1, Math.min(wa.size, wb.size)) }; })
+    .filter((x) => x.score > 0.4).sort((a, b) => b.score - a.score).slice(0, 5).map((x) => x.e);
+  return { id: null, ambiguous: false, suggestions: scored };
+}
+
+/* ------------------------------------------------------------------ ringkasan penyebab galat ------------------------------------------------------------------ */
+
+export interface ReasonSummary { code: string; label: string; hint: string; count: number; example: string }
+const REASONS: { code: string; test: RegExp; label: string; hint: string }[] = [
+  { code: "tahun", test: /di luar tahun anggaran/, label: "Tahun tidak sesuai", hint: "Tahun anggaran pada konteks yang dibuka berbeda dengan tanggal pada berkas. Pilih konteks tahun yang benar (menu Ganti Konteks) lalu ulangi." },
+  { code: "master", test: /tidak ditemukan di Data Master|ambigu \(nama sama|belanja .* ambigu/, label: "Nama tidak cocok dengan Data Master", hint: "Cocokkan nama pada kotak “Cocokkan nama yang belum dikenali” di bawah, atau samakan nama di Data Master." },
+  { code: "butir", test: /belum ada di Input Anggaran|butir ambigu|belum memiliki PPTK/, label: "Butir anggaran belum ada", hint: "Tambahkan butir di Input Anggaran (unduh “Daftar butir anggaran yang dibutuhkan”, isi pagunya, lalu unggah di Input Anggaran › Impor)." },
+  { code: "pptk", test: /PPTK|akun berperan/, label: "PPTK belum ada / tidak cocok", hint: "Buat akun PPTK di Data Master › PPTK (tersedia templat berisi PPTK bawaan), atau cocokkan namanya di kotak pencocokan di bawah." },
+  { code: "tahapan", test: /tahapan|draf|belum ada versi/, label: "Tahapan / versi anggaran", hint: "Aktifkan versi anggaran terkait, isi tanggal DPA-nya, atau pastikan butir ada pada versi tahapan tersebut." },
+  { code: "pagu", test: /melebihi sisa pagu/, label: "Melebihi pagu", hint: "Naikkan pagu butir pada versi tahapan terkait (Input Anggaran) atau periksa nilai realisasi." },
+  { code: "hak", test: /bukan butir penugasan/, label: "Bukan butir penugasan Anda", hint: "Hanya Admin yang dapat mengimpor untuk semua PPTK." },
+  { code: "tanggal", test: /tanggal|hari ini|nominal/, label: "Tanggal / nominal tidak valid", hint: "Perbaiki data di berkas sumber (mis. tanggal SP2D lebih awal dari tanggal transaksi)." },
+];
+export function summarizeReasons(problemRows: { no: string; line: number; message: string }[]): ReasonSummary[] {
+  const by = new Map<string, ReasonSummary>();
+  for (const r of problemRows) {
+    const def = REASONS.find((d) => d.test.test(r.message)) ?? { code: "lain", label: "Lainnya", hint: "Lihat kolom Catatan pada tabel." };
+    const cur = by.get(def.code) ?? { code: def.code, label: def.label, hint: def.hint, count: 0, example: `Baris ${r.no || r.line}: ${r.message}` };
+    cur.count++; by.set(def.code, cur);
+  }
+  return [...by.values()].sort((a, b) => b.count - a.count);
 }
 
 export const cleanText = (s: string) => s.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
@@ -202,11 +267,13 @@ export interface PlannedRow {
   itemId?: string; versionId?: string; stageLabel?: string; stage?: StageCode; importKey?: string;
   /** Tanggal transaksi dan SP2D jatuh pada tahapan berbeda (lintas DPA). */
   straddle?: boolean; notes: string[];
+  /** Diisi bila butir anggaran belum ada: kombinasi master yang dibutuhkan (untuk daftar butir yang perlu dibuat). */
+  missingItem?: { subId: string; accId: string; fundId: string; pptkId: string | null };
 }
 export interface StageTally { label: string; stage: StageCode; versionId: string; dpaDate: string | null; count: number; amount: number }
 export interface PlanOutcome {
   rows: PlannedRow[]; counts: Record<RowStatus, number>; total: { count: number; amount: number };
-  byStage: StageTally[]; straddle: number; problems: string[];
+  byStage: StageTally[]; straddle: number; problems: string[]; reasons: ReasonSummary[];
 }
 
 const uniq = (m: Map<string, string[]>, k: string): string | null | undefined => { const v = m.get(k); return !v ? undefined : v.length === 1 ? v[0]! : null; };
@@ -257,7 +324,7 @@ export function planRealizationImport(raw: RawRow[], maps: MasterMaps, opt: Plan
 
     // --- butir anggaran ---
     let cand = maps.items.filter((i) => !i.hasRup && i.subId === subId && i.accId === accId && i.fundId === fundId);
-    if (cand.length === 0) return fail("butir anggaran (sub kegiatan + belanja + sumber dana) belum ada di Input Anggaran");
+    if (cand.length === 0) return fail("butir anggaran (sub kegiatan + belanja + sumber dana) belum ada di Input Anggaran", { missingItem: { subId: subId!, accId: accId!, fundId, pptkId } });
     if (pptkId) {
       const mine = cand.filter((i) => i.pptkId === pptkId);
       if (mine.length === 0) return fail(`butir ini ditugaskan ke PPTK lain, bukan "${r.pptk}"; samakan penugasan PPTK di Input Anggaran atau perbaiki berkas`);
@@ -319,7 +386,7 @@ export function planRealizationImport(raw: RawRow[], maps: MasterMaps, opt: Plan
     }
   }
   const byStage = [...stageMap.values()].sort((a, b) => SEQ[a.stage] - SEQ[b.stage] || (a.dpaDate ?? "").localeCompare(b.dpaDate ?? ""));
-  return { rows, counts, total: { count: counts.baru, amount: totalAmt / 100 }, byStage, straddle: rows.filter((r) => r.status === "baru" && r.straddle).length, problems };
+  return { rows, counts, total: { count: counts.baru, amount: totalAmt / 100 }, byStage, straddle: rows.filter((r) => r.status === "baru" && r.straddle).length, problems, reasons: summarizeReasons(rows.filter((r) => r.status === "galat")) };
 }
 
 /* ------------------------------------------------------------------ metode pengadaan ------------------------------------------------------------------ */
@@ -346,6 +413,9 @@ export function guessMethods(rows: { method: string; amount: number }[], methods
   return out.sort((a, b) => b.count - a.count);
 }
 
+/** Nama pada berkas yang belum dikenali: pengguna dapat memetakannya ke entri master. */
+export interface UnresolvedName { kind: "sub" | "acc" | "fund" | "pptk"; name: string; count: number; suggestions: { id: string; label: string }[]; options: { id: string; label: string }[] }
+
 /* ------------------------------------------------------------------ keadaan antarmuka ------------------------------------------------------------------ */
 
 export interface RealizationImportState {
@@ -358,6 +428,9 @@ export interface RealizationImportState {
   byStage?: StageTally[];
   straddle?: number;
   versions?: { label: string; dpaDate: string | null; status: string }[];
+  reasons?: ReasonSummary[];
+  unresolved?: UnresolvedName[];
+  neededItems?: { subCode: string; accCode: string; fund: string; pptk: string; rows: number; total: number }[];
   methods?: MethodGuess[];
   methodOptions?: MethodRef[];
   canCreateMethods?: boolean;
