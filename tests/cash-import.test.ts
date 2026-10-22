@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { sumMonths } from "../src/lib/cash-core";
 import {
-  fitMonthsToPagu, planCashAdjust, planCashImport, quarterToMonths, resolveCashHeaders, type CashItem,
+  fitMonthsToPagu, planCashAdjust, planCashFromRealization, planCashImport, quarterToMonths, resolveCashHeaders, type CashItem,
 } from "../src/lib/cash-import-core";
 
 const ME = "U1";
@@ -104,5 +104,43 @@ describe("penyesuaian antartahapan", () => {
     const r = planCashAdjust([T({ itemId: "A", status: "final" }), T({ itemId: "B" }), T({ itemId: "C", mine: false })], new Map([["A", src(120, m)]]), false);
     expect(r.rows.map((x) => x.status)).toEqual(["dikunci", "tanpa_sumber"]);
     expect(r.others).toBe(1);
+  });
+});
+
+describe("kas berbasis realisasi (DPA 16 Maret)", () => {
+  const T = (o: Partial<{ pagu: number; mine: boolean; status: CashItem["status"]; months: number[] }> = {}) =>
+    ({ itemId: "A", label: "x", pagu: 1200, mine: true, status: "none" as const, months: Array(12).fill(0), ...o });
+  const oldPlan = { pagu: 1000, months: Array(12).fill(100).map((v, i) => (i >= 10 ? 0 : v)) }; // 1000 total
+  it("Jan-Feb = realisasi nyata; sisa pagu baru dibagi Mar-Des; total tepat pagu baru", () => {
+    const realized = new Map([["A", { monthly: [100, 50, 70, 0, 0, 0, 0, 0, 0, 0, 0, 0], preDpaMonth: 30 }]]);
+    const r = planCashFromRealization([T()], new Map([["A", oldPlan]]), realized, "2026-03-16", false);
+    const row = r.rows[0]!;
+    expect(row.status).toBe("realisasi");
+    expect(row.months!.slice(0, 2)).toEqual([100, 50]);
+    expect(sumMonths(row.months!)).toBe(1200);
+    // sisa = 1200 - (100+50+30) = 1020 dibagi Mar..Des (8 bulan rencana lama 100 + 2 bulan 0) ; Maret = 30 + bagian
+    expect(row.months![2]).toBeGreaterThan(30);
+    expect(row.months![10]).toBe(0);
+    expect(row.months![11]).toBe(0);
+  });
+  it("realisasi sebelum DPA melebihi pagu baru -> melebihi, tidak disimpan", () => {
+    const realized = new Map([["A", { monthly: [800, 500, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], preDpaMonth: 0 }]]);
+    const r = planCashFromRealization([T()], new Map([["A", oldPlan]]), realized, "2026-03-16", false);
+    expect(r.rows[0]!.status).toBe("melebihi");
+    expect(r.rows[0]!.months).toBeUndefined();
+  });
+  it("tanpa kas lama: sisa dibagi rata; tanpa apa pun -> dilewati; isian ada dilindungi", () => {
+    const realized = new Map([["A", { monthly: [120, ...Array(11).fill(0)], preDpaMonth: 0 }]]);
+    const r = planCashFromRealization([T()], new Map(), realized, "2026-02-01", false);
+    expect(r.rows[0]!.status).toBe("realisasi");
+    expect(sumMonths(r.rows[0]!.months!)).toBe(1200);
+    expect(planCashFromRealization([T()], new Map(), new Map(), "2026-03-16", false).rows[0]!.status).toBe("tanpa_sumber");
+    expect(planCashFromRealization([T({ months: [5, ...Array(11).fill(0)] })], new Map([["A", oldPlan]]), realized, "2026-03-16", false).rows[0]!.status).toBe("terisi");
+  });
+  it("DPA Desember: hanya Desember yang dibagi; pagu kecil tetap tepat", () => {
+    const realized = new Map([["A", { monthly: Array(12).fill(10), preDpaMonth: 5 }]]);
+    const r = planCashFromRealization([T({ pagu: 500 })], new Map([["A", oldPlan]]), realized, "2026-12-10", false);
+    expect(sumMonths(r.rows[0]!.months!)).toBe(500);
+    expect(r.rows[0]!.months!.slice(0, 11)).toEqual(Array(11).fill(10));
   });
 });

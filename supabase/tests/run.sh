@@ -19,3 +19,4 @@ psql -v ON_ERROR_STOP=1 -q -d "${TEST_DB}" -f supabase/tests/40_dpa_tests.sql
 psql -v ON_ERROR_STOP=1 -q -d "${TEST_DB}" -f supabase/tests/50_supplier_tests.sql
 psql -v ON_ERROR_STOP=1 -q -d "${TEST_DB}" -f supabase/tests/60_realization_tests.sql
 psql -v ON_ERROR_STOP=1 -q -d "${TEST_DB}" -f supabase/tests/70_sp2d_status_tests.sql
+psql -v ON_ERROR_STOP=1 -q -d "${TEST_DB}" -f supabase/tests/80_import_realisasi_tests.sql
