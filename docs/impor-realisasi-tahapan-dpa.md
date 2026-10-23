@@ -46,3 +46,13 @@ Tanggal yang tersimpan sebagai angka serial Excel kini juga terbaca.
 - `loading.tsx` menampilkan kerangka halaman seketika saat pindah menu.
 - Pemuatan sesi dipercepat: profil dan peran diambil bersamaan, matriks izin peran di-cache 60 detik di memori instans, validasi konteks anggaran berjalan bersamaan dengan pemuatan profil, lencana menu dimuat setelah halaman tampil (`/nav-badges`). Validasi JWT (`auth.getUser`) dan RLS tidak diubah.
 - Faktor terbesar yang tidak dapat diubah dari kode: **wilayah (region) fungsi Vercel harus sedekat mungkin dengan wilayah proyek Supabase** (Supabase: Project Settings › General; Vercel: Settings › Functions › Function Region). Wilayah yang berjauhan menambah ratusan milidetik pada setiap panggilan basis data.
+
+## 7. Pengguna & Peran / PPTK (perbaikan "Tambah pengguna tidak tersimpan")
+- Pembuatan akun kini satu jalur (`src/lib/account-admin.ts`) untuk **Pengguna & Peran**, **Data Master › PPTK (tambah satu / impor)**. Bila gagal, pesan menyebut penyebabnya: variabel server kosong, kunci `service_role` salah, kata sandi ditolak kebijakan Supabase, email internal ditolak (otomatis dicoba domain cadangan), trigger `auth.users` gagal, tabel/migrasi belum ada, dsb.
+- Panel **"Periksa kesiapan pembuatan akun"** (halaman Pengguna & Peran) menguji variabel server, kunci, tabel, dan membuat+menghapus satu akun uji di Supabase Auth.
+- Kolom kata sandi punya tombol **Buat acak** (huruf besar, kecil, angka, simbol).
+- Akun berperan PPTK satu sumber data: tampil otomatis di **Data Master › PPTK**, di pilihan PPTK Input Anggaran/Impor, dan sebaliknya. Ada formulir **Tambah satu PPTK** di Data Master.
+- Satu `.env.example` disertakan; `APP_SECRET` dibuat dengan: `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`.
+
+## 8. Pembersihan kode
+Dihapus karena sudah digantikan/tidak dirujuk: `importCsvAction`, `importCashPlansAction` (diganti panel impor dengan pratinjau), `correctDateAction` (diganti `correctDatesAction`), komponen `CashPlanForm`, `ScrollToRow`, `StackBar`, modul `lra.ts`, `loadReport`/`sumRows` di `reports.ts` (LRA memakai `lra-core`), `requirePermission`, `rowAllocation`, `quarterRoman`. Ditambah halaman galat ramah (`error.tsx`), `not-found.tsx`, dan cache singkat nama organisasi.
