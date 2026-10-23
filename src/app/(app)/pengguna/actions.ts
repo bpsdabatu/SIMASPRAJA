@@ -1,12 +1,11 @@
 "use server";
 
-import { randomUUID } from "node:crypto";
 import { requireModule } from "@/lib/auth/guard";
 import { adminClient } from "@/lib/supabase/admin";
+import { createAccount, diagnoseAccountSetup } from "@/lib/account-admin";
 import { userClient } from "@/lib/supabase/server";
 import { flashRedirect } from "@/lib/flash";
 import { passwordSchema } from "@/lib/auth/password-policy";
-import { USERNAME_RE } from "@/lib/auth/login-core";
 import { friendlyError, isUuid, optStr, str } from "@/lib/action-utils";
 
 const BACK = "/pengguna";
@@ -28,54 +27,20 @@ async function targetInOrg(id: string, orgId: string) {
 
 export async function createUserAction(fd: FormData): Promise<void> {
   const { user } = await requireModule("users.manage");
-  const username = str(fd, "username", 32).toLowerCase();
-  const fullName = str(fd, "fullName", 150);
-  const roles = rolesFrom(fd);
-  const password = String(fd.get("password") ?? "");
-  if (!USERNAME_RE.test(username)) flashRedirect(BACK, { err: "Username 3–32 karakter: huruf kecil, angka, titik, garis bawah, atau strip." });
-  if (!fullName) flashRedirect(BACK, { err: "Nama lengkap wajib diisi." });
-  if (roles.length === 0) flashRedirect(BACK, { err: "Pilih minimal satu peran." });
-  const pw = passwordSchema.safeParse(password);
-  if (!pw.success) flashRedirect(BACK, { err: `Kata sandi sementara: ${pw.error.issues[0]?.message}` });
+  const res = await createAccount(
+    { id: user.id, organizationId: user.organizationId },
+    { username: str(fd, "username", 32), fullName: str(fd, "fullName", 150), roles: rolesFrom(fd), password: String(fd.get("password") ?? ""), nip: optStr(fd, "nip", 30), position: optStr(fd, "position", 150) },
+  );
+  if (!res.ok) flashRedirect(BACK, { err: res.error });
+  flashRedirect(BACK, { ok: `Pengguna @${str(fd, "username", 32).toLowerCase()} dibuat. Sampaikan kata sandi sementara melalui jalur aman; wajib diganti saat masuk pertama.${rolesFrom(fd).includes("pptk") ? " Akun berperan PPTK otomatis muncul di Data Master › PPTK." : ""}` });
+}
 
-  const admin = adminClient();
-  const dupe = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
-  if (dupe.data) flashRedirect(BACK, { err: `Username "${username}" sudah dipakai.` });
+export interface DiagnoseState { results?: { label: string; ok: boolean; detail: string }[] }
 
-  const internalEmail = `${randomUUID()}@auth.simaspraja.invalid`;
-  const created = await admin.auth.admin.createUser({ email: internalEmail, password, email_confirm: true });
-  if (created.error || !created.data.user) {
-    console.error("[pengguna] createUser", created.error?.message);
-    flashRedirect(BACK, { err: "Akun tidak dapat dibuat. Periksa kebijakan kata sandi atau coba lagi." });
-  }
-  const uid = created.data.user!.id;
-  let failure = "";
-  try {
-    const p = await admin.from("profiles").insert({
-      id: uid, organization_id: user.organizationId, username, full_name: fullName,
-      nip: optStr(fd, "nip", 30), position_title: optStr(fd, "position", 150), must_change_password: true,
-    });
-    if (p.error) throw new Error(p.error.message);
-    const steps = [
-      admin.from("auth_identities").insert({ profile_id: uid, internal_email: internalEmail }),
-      admin.from("user_roles").insert(roles.map((r) => ({ user_id: uid, role_code: r, granted_by: user.id }))),
-      ...(roles.some((r) => r === "admin" || r === "ppk")
-        ? [admin.from("user_scopes").insert({ user_id: uid, scope_type: "organization", scope_id: null, granted_by: user.id })] : []),
-    ];
-    for (const s of steps) { const r = await s; if (r.error) throw new Error(r.error.message); }
-  } catch (e) {
-    console.error("[pengguna] simpan profil", e instanceof Error ? e.message : "unknown");
-    failure = "Profil tidak dapat disimpan; pembuatan akun dibatalkan.";
-    // Bersihkan agar tidak ada akun setengah jadi (profiles.id -> auth.users bersifat RESTRICT).
-    await admin.from("user_scopes").delete().eq("user_id", uid);
-    await admin.from("user_roles").delete().eq("user_id", uid);
-    await admin.from("auth_identities").delete().eq("profile_id", uid);
-    await admin.from("profiles").delete().eq("id", uid);
-    await admin.auth.admin.deleteUser(uid);
-  }
-  if (failure) flashRedirect(BACK, { err: failure });
-  await audit(user.id, user.organizationId, "USER_CREATED", uid, { username, roles });
-  flashRedirect(BACK, { ok: `Pengguna @${username} dibuat. Sampaikan kata sandi sementara melalui jalur aman; wajib diganti saat masuk pertama.` });
+/** Uji kesiapan pembuatan akun (variabel server, kunci service_role, tabel, dan akun uji yang langsung dihapus). */
+export async function diagnoseAccountsAction(_prev: DiagnoseState): Promise<DiagnoseState> {
+  await requireModule("users.manage");
+  return { results: await diagnoseAccountSetup() };
 }
 
 export async function setUserStatusAction(fd: FormData): Promise<void> {

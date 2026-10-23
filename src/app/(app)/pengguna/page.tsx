@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Plus } from "lucide-react";
+import { Plus, ShieldCheck } from "lucide-react";
 import { requireModule } from "@/lib/auth/guard";
 import { userClient } from "@/lib/supabase/server";
 import { ROLE_LABEL } from "@/lib/nav";
@@ -9,6 +9,7 @@ import { Field, Input } from "@/components/ui/input";
 import { EmptyState, Flash, PageHeader, TableWrap } from "@/components/ui/page";
 import { ConfirmSubmit, SubmitButton } from "@/components/ui/submit-button";
 import { createUserAction, resetPasswordAction, setRolesAction, setUserStatusAction } from "./actions";
+import { AccountDiagnostics, PasswordInput } from "./account-tools";
 
 export const metadata: Metadata = { title: "Pengguna & Peran" };
 export const dynamic = "force-dynamic";
@@ -50,12 +51,19 @@ export default async function PenggunaPage({ searchParams }: { searchParams: Pro
             <Field label="Nama lengkap" htmlFor="fullName"><Input id="fullName" name="fullName" required maxLength={150} /></Field>
             <Field label="NIP" htmlFor="nip"><Input id="nip" name="nip" maxLength={30} inputMode="numeric" /></Field>
             <Field label="Jabatan" htmlFor="position"><Input id="position" name="position" maxLength={150} /></Field>
-            <div className="sm:col-span-2"><RoleChecks /></div>
+            <div className="sm:col-span-2"><RoleChecks /><p className="mt-1.5 text-xs text-slate-500">Peran <b>PPTK</b> otomatis menampilkan akun ini di <a href="/master?tab=pptk" className="font-semibold text-navy-700 underline">Data Master › PPTK</a> dan pada pilihan PPTK di Input Anggaran.</p></div>
             <Field label="Kata sandi sementara" htmlFor="password" hint="Minimal 10 karakter, huruf besar, huruf kecil, angka. Pengguna wajib menggantinya saat masuk pertama." className="sm:col-span-2">
-              <Input id="password" name="password" type="text" required minLength={10} maxLength={128} autoComplete="off" spellCheck={false} />
+              <PasswordInput id="password" />
             </Field>
             <div className="sm:col-span-2"><SubmitButton pendingText="Membuat...">Buat pengguna</SubmitButton></div>
           </form>
+        </details>
+      </Card>
+
+      <Card>
+        <details>
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 text-sm font-semibold text-navy-800 [&::-webkit-details-marker]:hidden"><ShieldCheck size={16} aria-hidden /> Periksa kesiapan pembuatan akun</summary>
+          <AccountDiagnostics />
         </details>
       </Card>
 
@@ -88,7 +96,7 @@ export default async function PenggunaPage({ searchParams }: { searchParams: Pro
                               </form>
                               <form action={resetPasswordAction} className="space-y-2 border-t border-slate-100 pt-3">
                                 <input type="hidden" name="userId" value={r.id} />
-                                <Field label="Atur ulang kata sandi sementara" htmlFor={`pw-${r.id}`}><Input id={`pw-${r.id}`} name="password" type="text" required minLength={10} maxLength={128} autoComplete="off" spellCheck={false} /></Field>
+                                <Field label="Atur ulang kata sandi sementara" htmlFor={`pw-${r.id}`}><PasswordInput id={`pw-${r.id}`} /></Field>
                                 <ConfirmSubmit size="sm" variant="outline" message="Atur ulang kata sandi? Semua sesi pengguna ini akan diakhiri.">Atur ulang</ConfirmSubmit>
                               </form>
                               <form action={setUserStatusAction} className="border-t border-slate-100 pt-3">

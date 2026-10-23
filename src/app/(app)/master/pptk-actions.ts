@@ -1,8 +1,10 @@
 "use server";
 
-import { randomInt, randomUUID } from "node:crypto";
+import { revalidatePath } from "next/cache";
 import { requireModule } from "@/lib/auth/guard";
 import { adminClient } from "@/lib/supabase/admin";
+import { createAccount, envProblem, tempPassword } from "@/lib/account-admin";
+import { SERVICE_KEY_VAR } from "@/lib/env";
 import { readTable, normHeader } from "@/lib/spreadsheet";
 import { USERNAME_RE } from "@/lib/auth/login-core";
 
@@ -13,15 +15,6 @@ export interface PptkImportState {
 }
 
 const COLS = { username: ["username", "nama_pengguna", "user"], name: ["nama_lengkap", "nama", "name"], nip: ["nip"], position: ["jabatan", "position", "jabatan_pptk"] };
-
-/** Kata sandi sementara acak (12 karakter; memenuhi kebijakan: huruf besar, kecil, angka). */
-function tempPassword(): string {
-  const U = "ABCDEFGHJKLMNPQRSTUVWXYZ", L = "abcdefghijkmnopqrstuvwxyz", D = "23456789";
-  const pick = (s: string) => s[randomInt(s.length)]!;
-  const chars = [pick(U), pick(U), pick(L), pick(L), pick(L), pick(L), pick(D), pick(D), pick(D), pick(U + L + D), pick(U + L + D), pick(U + L + D)];
-  for (let i = chars.length - 1; i > 0; i--) { const j = randomInt(i + 1); [chars[i], chars[j]] = [chars[j]!, chars[i]!]; }
-  return chars.join("");
-}
 
 /**
  * Impor PPTK dari Excel/CSV: membuat akun berperan PPTK dengan kata sandi sementara acak
@@ -42,7 +35,8 @@ export async function importPptkAction(_prev: PptkImportState, fd: FormData): Pr
   if (data.length === 0) return { error: "Berkas tidak berisi baris data." };
   if (data.length > 200) return { error: "Maksimal 200 PPTK per impor." };
 
-  const admin = adminClient();
+  let admin;
+  try { admin = adminClient(); } catch (e) { return { error: envProblem(e) ?? "Klien server tidak dapat dibuat." }; }
   const { data: existing } = await admin.from("profiles").select("username").limit(20000);
   const taken = new Set((existing ?? []).map((p) => String(p.username)));
   const problems: string[] = [];
@@ -64,31 +58,25 @@ export async function importPptkAction(_prev: PptkImportState, fd: FormData): Pr
   const failed: string[] = [];
   for (const r of rows) {
     const password = tempPassword();
-    const internalEmail = `${randomUUID()}@auth.simaspraja.invalid`;
-    const made = await admin.auth.admin.createUser({ email: internalEmail, password, email_confirm: true });
-    if (made.error || !made.data.user) { failed.push(`Baris ${r.line} (@${r.username}): akun tidak dapat dibuat`); continue; }
-    const uid = made.data.user.id;
-    let ok = true;
-    try {
-      const p = await admin.from("profiles").insert({ id: uid, organization_id: user.organizationId, username: r.username, full_name: r.fullName, nip: r.nip, position_title: r.position, must_change_password: true });
-      if (p.error) throw new Error(p.error.message);
-      for (const s of [
-        admin.from("auth_identities").insert({ profile_id: uid, internal_email: internalEmail }),
-        admin.from("user_roles").insert({ user_id: uid, role_code: "pptk", granted_by: user.id }),
-      ]) { const x = await s; if (x.error) throw new Error(x.error.message); }
-    } catch (e) {
-      console.error("[master/pptk] simpan profil", e instanceof Error ? e.message : "unknown");
-      ok = false;
-      await admin.from("user_roles").delete().eq("user_id", uid);
-      await admin.from("auth_identities").delete().eq("profile_id", uid);
-      await admin.from("profiles").delete().eq("id", uid);
-      await admin.auth.admin.deleteUser(uid);
-      failed.push(`Baris ${r.line} (@${r.username}): profil tidak dapat disimpan`);
-    }
-    if (ok) {
-      created.push({ username: r.username, name: r.fullName, password });
-      await admin.from("audit_logs").insert({ action: "USER_CREATED", actor_id: user.id, organization_id: user.organizationId, table_name: "profiles", record_id: uid, context: { username: r.username, roles: ["pptk"], via: "master-import" } });
-    }
+    const res = await createAccount({ id: user.id, organizationId: user.organizationId }, { username: r.username, fullName: r.fullName, nip: r.nip, position: r.position, roles: ["pptk"], password });
+    if (res.ok) created.push({ username: r.username, name: r.fullName, password });
+    else failed.push(`Baris ${r.line} (@${r.username}): ${res.error}`);
+    // Kegagalan yang berlaku untuk semua baris (kunci/konfigurasi) dihentikan lebih awal agar tidak mengulang galat yang sama.
+    if (!res.ok && new RegExp(`${SERVICE_KEY_VAR}|Konfigurasi server|Tabel pengguna belum ada`).test(res.error)) break;
   }
   return { created, failed: failed.length ? failed : undefined };
+}
+
+/** Tambah SATU PPTK (akun berperan PPTK; sama dengan menambah di Pengguna & Peran dengan peran PPTK). Kata sandi acak tampil sekali. */
+export async function addPptkAction(_prev: PptkImportState, fd: FormData): Promise<PptkImportState> {
+  const { user } = await requireModule("users.manage");
+  const password = tempPassword();
+  const res = await createAccount(
+    { id: user.id, organizationId: user.organizationId },
+    { username: String(fd.get("username") ?? ""), fullName: String(fd.get("fullName") ?? ""), nip: String(fd.get("nip") ?? "") || null, position: String(fd.get("position") ?? "") || null, roles: ["pptk"], password },
+  );
+  if (!res.ok) return { error: res.error };
+  revalidatePath("/master");
+  revalidatePath("/pengguna");
+  return { created: [{ username: String(fd.get("username") ?? "").trim().toLowerCase(), name: String(fd.get("fullName") ?? "").trim(), password }] };
 }

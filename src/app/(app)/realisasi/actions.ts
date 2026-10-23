@@ -117,18 +117,6 @@ export async function cancelTransactionAction(fd: FormData): Promise<void> {
   );
 }
 
-/** Koreksi tanggal SP2D dengan alasan tercatat (hak koreksi Admin). */
-export async function correctDateAction(fd: FormData): Promise<void> {
-  await requireModule("realization.correct");
-  const id = txId(fd);
-  const date = str(fd, "date", 10);
-  if (!DATE_RE.test(date)) flashRedirect(detail(id), { err: "Tanggal SP2D wajib diisi dengan benar." });
-  const supabase = await userClient();
-  return runAction(detail(id), "Tanggal SP2D dikoreksi dan alasan tercatat.", async () =>
-    supabase.rpc("correct_realization_date", { p_tx: id, p_date: date, p_reason: str(fd, "reason", 300) }),
-  );
-}
-
 /** Koreksi tanggal transaksi dan tanggal SP2D sekaligus, dengan alasan tercatat (hak koreksi Admin). */
 export async function correctDatesAction(fd: FormData): Promise<void> {
   await requireModule("realization.correct");

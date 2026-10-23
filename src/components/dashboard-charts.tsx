@@ -95,17 +95,3 @@ export function QuarterBars({ data }: { data: QBar[] }) {
   );
 }
 
-/** Batang bertumpuk horizontal (mis. status transaksi). */
-export function StackBar({ parts }: { parts: { label: string; value: number; color: string }[] }) {
-  const total = parts.reduce((a, p) => a + p.value, 0);
-  return (
-    <div>
-      <div className="flex h-3 overflow-hidden rounded-full bg-slate-100" role="img" aria-label={parts.map((p) => `${p.label} ${p.value}`).join(", ")}>
-        {total > 0 && parts.filter((p) => p.value > 0).map((p) => <div key={p.label} className={cn(p.color, "bar-grow")} style={{ width: `${(p.value / total) * 100}%` }} title={`${p.label}: ${p.value}`} />)}
-      </div>
-      <ul className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-3">
-        {parts.map((p) => <li key={p.label} className="flex items-center gap-2 text-slate-600"><span className={cn("h-2.5 w-2.5 rounded-sm", p.color)} aria-hidden /><span className="truncate">{p.label}</span><b className="ml-auto tabular-nums text-slate-900">{p.value}</b></li>)}
-      </ul>
-    </div>
-  );
-}

@@ -14,6 +14,7 @@ import { EmptyState, Flash, PageHeader, TableWrap } from "@/components/ui/page";
 import { ConfirmSubmit, PrintButton, SubmitButton } from "@/components/ui/submit-button";
 import { PrintFooter, PrintHeader } from "@/components/ui/report";
 import { getOrganizationName } from "@/lib/lookups";
+import { PptkAddForm } from "./pptk-add-form";
 import { PptkImportForm } from "./pptk-import-form";
 import { cn } from "@/lib/utils";
 import { deleteMasterAction, importMasterAction, importMasterWorkbookAction, seedMasterBawaanAction, seedProcurementMethodsAction, saveMasterAction, toggleMasterAction } from "./actions";
@@ -287,6 +288,10 @@ async function PptkTab({ sp, org }: { sp: { ok?: string; err?: string }; org: st
       />
       <Flash ok={sp.ok} err={sp.err} />
       <MasterTabs tab="pptk" canUsers />
+      <Card className="no-print">
+        <CardHeader title="Tambah satu PPTK" description="Akun PPTK yang dibuat di sini juga muncul di Pengguna & Peran, dan sebaliknya (satu sumber data: akun berperan PPTK)." />
+        <div className="p-5"><PptkAddForm /></div>
+      </Card>
       <Card className="no-print">
         <CardHeader title="Unggah PPTK dari Excel / CSV" actions={<>
           <a href="/master/template?tab=pptk&format=xlsx" className={buttonVariants({ variant: "outline", size: "sm" })}><FileSpreadsheet size={14} aria-hidden /> Templat Excel</a>
