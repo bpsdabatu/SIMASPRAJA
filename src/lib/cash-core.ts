@@ -91,4 +91,3 @@ export function parseLoose(raw: string): number {
 }
 
 /** Status baris anggaran kas pada tabel ringkas: kosong/sebagian/penuh/lebih terhadap pagu. */
-export const rowAllocation = (pagu: number, months: number[]) => allocation(pagu, months);

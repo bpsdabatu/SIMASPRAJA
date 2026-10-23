@@ -38,8 +38,6 @@ export interface Metrics {
 }
 
 export const QUARTER_LABEL: Record<Quarter, string> = { 1: "Triwulan I", 2: "Triwulan II", 3: "Triwulan III", 4: "Triwulan IV" };
-const ROMAN: Record<Quarter, string> = { 1: "I", 2: "II", 3: "III", 4: "IV" };
-export const quarterRoman = (q: Quarter) => ROMAN[q];
 
 export function quarterRange(year: number, q: Quarter): { start: string; end: string } {
   const m1 = (q - 1) * 3 + 1, m3 = m1 + 2;

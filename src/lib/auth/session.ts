@@ -77,12 +77,6 @@ export async function requireUser(): Promise<SessionUser> {
   return user;
 }
 
-export async function requirePermission(code: string): Promise<SessionUser> {
-  const user = await requireUser();
-  if (!user.permissions.has(code)) redirect("/dashboard?akses=ditolak");
-  return user;
-}
-
 export interface BudgetContext {
   year: number;
   stage: Stage;

@@ -6,6 +6,9 @@ import { z } from "zod";
  * tidak gagal saat variabel tidak ada di lingkungan build tertentu.
  * Rahasia server TIDAK PERNAH dibaca dari variabel ber-awalan NEXT_PUBLIC_.
  */
+/** Nama variabel kunci server untuk pesan galat (satu-satunya tempat nama ini berada di luar admin.ts; nilainya TIDAK dibaca di sini). */
+export const SERVICE_KEY_VAR = "SUPABASE_SERVICE_ROLE_KEY";
+
 const publicSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(20),

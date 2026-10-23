@@ -40,9 +40,15 @@ export async function loadSuppliersMethods(sb: Sb) {
   return { suppliers: (sup ?? []).map((s) => ({ id: s.id as string, label: s.name as string })), methods };
 }
 
+const orgNameCache = new Map<string, { at: number; name: string }>();
+/** Nama organisasi jarang berubah dan dibaca di banyak halaman: di-cache 10 menit di memori instans (hanya bila tidak kosong). */
 export async function getOrganizationName(sb: Sb, organizationId: string): Promise<string> {
+  const hit = orgNameCache.get(organizationId);
+  if (hit && Date.now() - hit.at < 600_000) return hit.name;
   const { data } = await sb.from("organizations").select("name").eq("id", organizationId).maybeSingle();
-  return (data?.name as string | undefined) ?? "";
+  const name = (data?.name as string | undefined) ?? "";
+  if (name) orgNameCache.set(organizationId, { at: Date.now(), name });
+  return name;
 }
 
 export interface TreeProgram { id: string; code: string; name: string }
