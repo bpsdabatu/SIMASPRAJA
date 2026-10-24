@@ -37,7 +37,6 @@ export default async function RekapPage({ searchParams }: { searchParams: Promis
   for (const r of rows) { const k = `${r.subCode}|${r.subName}`; (groups.get(k) ?? groups.set(k, []).get(k)!).push(r); }
   const sub = `Tahun Anggaran ${context.year} — ${STAGE_LABEL[context.stage]}`;
   const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString();
-  const span = 3 + (showPending ? 1 : 0);
 
   return (
     <div className="mx-auto max-w-7xl space-y-5">
@@ -109,7 +108,7 @@ export default async function RekapPage({ searchParams }: { searchParams: Promis
                 })}
               </tbody>
               <tfoot><tr className="bg-slate-50 font-bold">
-                <td colSpan={span} className="px-3 py-3 text-right">TOTAL ({rows.length} butir)</td>
+                <td colSpan={3} className="px-3 py-3 text-right">TOTAL ({rows.length} butir)</td>
                 <td className="num px-3 py-3">{formatRupiah(t.pagu)}</td><td className="num px-3 py-3">{formatRupiah(t.realisasi)}</td>
                 {showPending && <td className="num px-3 py-3">{formatRupiah(t.pending)}</td>}
                 <td className="num px-3 py-3">{formatRupiah(t.komitmen)}</td>
