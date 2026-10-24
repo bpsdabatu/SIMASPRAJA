@@ -177,11 +177,16 @@ describe("rencana impor dari berkas asli", () => {
     expect(o.counts.baru).toBeLessThanOrEqual(mine);
     expect(o.problems.some((p) => p.includes("bukan butir penugasan Anda"))).toBe(true);
   });
-  it("PPTK pada berkas berbeda dari penugasan butir ditolak", () => {
+  it("PPTK berbeda dari penugasan butir: satu kandidat -> diterima dengan catatan; beberapa butir tanpa yang cocok -> ditolak", () => {
     const maps = buildMaps();
     maps.items = maps.items.map((i) => ({ ...i, pptkId: "U-LAIN" }));
     const o = planRealizationImport(rows.slice(0, 1), maps, opts());
-    expect(o.problems[0]).toContain("ditugaskan ke PPTK lain");
+    expect(o.counts.baru).toBe(1);
+    expect(o.rows[0]!.notes.join(" ")).toContain("berbeda dari PPTK penugasan butir");
+    const m2 = buildMaps();
+    m2.items = m2.items.flatMap((i) => [{ ...i, pptkId: "U-LAIN" }, { ...i, id: `${i.id}-b`, pptkId: "U-LAIN2" }]);
+    m2.itemsInVersion = new Map([...m2.itemsInVersion].map(([k, v]) => [k, new Set([...v, ...[...v].map((x) => `${x}-b`)])]));
+    expect(planRealizationImport(rows.slice(0, 1), m2, opts()).problems[0]).toContain("tidak ada yang ditugaskan ke PPTK");
   });
 });
 
@@ -243,5 +248,46 @@ describe("ringkasan penyebab galat", () => {
     ];
     const s = Object.fromEntries(summarizeReasons(rows).map((x) => [x.code, x.count]));
     expect(s).toEqual({ master: 2, butir: 1, pptk: 1, tanggal: 1, tahun: 1 });
+  });
+});
+
+describe("berkas dengan nama PPTK bergelar (kasus nyata: belum ada akun PPTK)", () => {
+  const g = parseRealizationReport(parseCsv(readFileSync(path.join(__dirname, "fixtures/realisasi-2026-gelar.csv"), "utf8")));
+  if (!g.ok) throw new Error(g.error);
+  const rows = g.rows;
+
+  /** Butir ada (tanpa PPTK), tetapi TIDAK ada satu pun akun PPTK. */
+  function noPptkMaps(): MasterMaps {
+    const m = buildMaps();
+    m.look = { ...m.look, pptk: [], pptkByUsername: new Map() };
+    // satu butir per kombinasi (sub, belanja, sumber dana), sebagaimana di basis data yang menugaskan satu PPTK per butir
+    const seen = new Set<string>();
+    m.items = m.items.filter((i) => { const k = `${i.subId}|${i.accId}|${i.fundId}`; if (seen.has(k)) return false; seen.add(k); return true; }).map((i) => ({ ...i, pptkId: null }));
+    m.itemsInVersion = new Map([...m.itemsInVersion].map(([k]) => [k, new Set(m.items.map((i) => i.id))]));
+    return m;
+  }
+  it("Admin tanpa akun PPTK: 158 baris tetap valid (tidak lagi ditolak), dengan catatan", () => {
+    const o = planRealizationImport(rows, noPptkMaps(), opts());
+    expect(o.counts).toMatchObject({ baru: 158, galat: 2 });
+    expect(o.problems.every((p) => /setelah tanggal SP2D|melebihi hari ini/.test(p))).toBe(true);
+    expect(o.rows.find((r) => r.status === "baru")!.notes.join(" ")).toContain("belum terdaftar sebagai akun");
+    expect(o.byStage.map((s) => [s.stage, s.count, s.amount])).toEqual([["murni", 43, 74084945], ["pergeseran", 115, 279486124]]);
+  });
+  it("tanpa akun PPTK, butir kembar (beda PPTK) tidak dapat dibedakan -> ditolak dengan petunjuk", () => {
+    const m = noPptkMaps();
+    const first = m.items[0]!;
+    m.items.push({ ...first, id: "I-KEMBAR" });
+    m.itemsInVersion.get("VM")!.add("I-KEMBAR");
+    const target = rows.find((r) => normName(r.subName) === normName(SEED_SUB_ACTIVITIES.find((s) => `S:${s.code}` === first.subId)!.name));
+    const o = planRealizationImport(target ? [target] : [], m, opts());
+    expect(o.problems[0]).toContain("buat akun PPTK");
+  });
+  it("dengan akun PPTK bergelar persis: nama dikenali dan butir ber-PPTK dicocokkan", () => {
+    const maps = buildMaps();
+    maps.look = { ...maps.look, pptk: SEED_PPTK_NAMES.map((n, i) => ({ id: `U${i}`, fullName: n })) };
+    maps.items = maps.items.map((i) => ({ ...i, pptkId: i.pptkId }));
+    const o = planRealizationImport(rows, maps, opts());
+    expect(o.counts.baru).toBe(158);
+    expect(o.rows.filter((r) => r.status === "baru").every((r) => r.notes.every((n) => !n.includes("belum terdaftar")))).toBe(true);
   });
 });

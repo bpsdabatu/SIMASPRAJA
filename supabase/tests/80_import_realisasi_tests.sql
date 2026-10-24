@@ -87,11 +87,10 @@ select t.ok((select budget_version_id from public.realization_transactions where
 select t.lives($q$insert into t.ids select 'ir12', public.import_realization_row(t.id('ibt1'), t.id('ia'), t.yd(3, 10), t.yd(3, 20), 'Melintasi tahapan (dasar transaksi)', null, null, 1000, 'k12', null)$q$, 'baris yang sama pada batch dasar transaksi');
 select t.ok((select budget_version_id from public.realization_transactions where id = t.id('ir12')) = t.id('im'), 'dasar transaksi: tanggal transaksi 10 Mar -> Murni');
 
--- hak akses
+-- hak akses: HANYA Admin (migrasi 0015)
 select t.as_user(:'pptk1');
-select t.lives(format($q$insert into t.ids select 'ibt3', public.start_realization_import((select fiscal_year_id from public.budget_versions where id = t.id('im')), 'pptk1.csv', repeat('c', 64), 1, 1, 'transaksi')$q$), 'PPTK membuka batch');
-select t.lives($q$insert into t.ids select 'ir13', public.import_realization_row(t.id('ibt3'), t.id('ia'), t.yd(2, 25), t.yd(2, 26), 'PPTK1 butirnya', null, null, 1000, 'k13', null)$q$, 'PPTK1 impor butirnya sendiri');
-select t.throws($q$select public.import_realization_row(t.id('ibt3'), t.id('ib'), t.yd(2, 25), t.yd(2, 26), 'Butir PPTK2', null, null, 1000, 'k14', null)$q$, 'PPTK1 tidak dapat impor butir PPTK2');
+select t.throws(format($q$select public.start_realization_import((select fiscal_year_id from public.budget_versions where id = t.id('im')), 'pptk1.csv', repeat('c', 64), 1, 1, 'transaksi')$q$), 'PPTK tidak dapat membuka batch impor');
+select t.throws($q$select public.import_realization_row(t.id('ibt1'), t.id('ia'), t.yd(2, 25), t.yd(2, 26), 'PPTK1 butirnya', null, null, 1000, 'k13', null)$q$, 'PPTK tidak dapat impor, bahkan butirnya sendiri');
 select t.denied($q$insert into public.realization_import_batches (organization_id, fiscal_year_id, file_name, file_sha256, rows_in_file, total_in_file) select organization_id, fiscal_year_id, 'x', 'y', 1, 1 from public.budget_versions limit 1$q$, 'batch tidak dapat dibuat langsung (hanya lewat fungsi)');
 select t.as_user(:'ppbj');
 select t.throws($q$select public.start_realization_import((select fiscal_year_id from public.budget_versions where id = t.id('im')), 'x.csv', 'x', 1, 1, 'transaksi')$q$, 'PPBJ tidak dapat membuka batch');
@@ -102,5 +101,5 @@ select t.throws($q$select public.import_realization_row(t.id('ibt1'), t.id('ia')
 select t.as_user(:'admin');
 select t.ok((select count(*) from public.realization_import_batches where file_name = 'uji.csv') = 1, 'Admin melihat batch');
 select t.as_super();
-select t.ok((select count(*) from public.audit_logs where table_name = 'realization_import_batches' and action = 'INSERT') >= 3, 'pembuatan batch tercatat di audit');
+select t.ok((select count(*) from public.audit_logs where table_name = 'realization_import_batches' and action = 'INSERT') >= 2, 'pembuatan batch tercatat di audit');
 select t.ok((select count(*) from public.realization_transactions where import_batch_id = t.id('ibt1')) = 5, 'batch b1 memuat 5 transaksi (k1,k2,k3,k8,k12)');

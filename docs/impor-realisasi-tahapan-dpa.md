@@ -1,6 +1,6 @@
 # Impor Realisasi, tahapan menurut tanggal DPA, dan kas berbasis realisasi
 
-**Wajib: jalankan migrasi `supabase/migrations/0014_impor_realisasi_tahapan_dpa.sql`** di Supabase › SQL Editor (aditif, aman diulang; tidak mengubah data/fungsi yang ada).
+**Wajib: jalankan migrasi `0014_impor_realisasi_tahapan_dpa.sql` lalu `0015_impor_realisasi_khusus_admin.sql`** (berurutan) di Supabase › SQL Editor (aditif, aman diulang; tidak mengubah data/fungsi yang ada).
 Tanpa migrasi, input realisasi manual tetap berjalan seperti semula; hanya halaman Impor yang meminta migrasi.
 
 ## 1. Menentukan tahapan dari tanggal DPA
@@ -17,7 +17,7 @@ Tanpa migrasi, input realisasi manual tetap berjalan seperti semula; hanya halam
 - **Akuntabel**: tiap unggahan = satu batch (nama berkas, sidik jari SHA-256, jumlah baris, total, pelaku, waktu; tercatat di audit) dan tiap transaksi menyimpan `import_batch_id`. Riwayat batch tampil di halaman Impor.
 - **Aman diulang**: tiap baris punya kunci unik (butir + tanggal transaksi + nilai + urutan kemunculan) yang ditegakkan basis data → unggah ulang berkas yang sama tidak menggandakan. Transaksi kembar yang sah dalam satu berkas tetap masuk keduanya.
 - Baris yang mirip input manual (butir, tanggal, nilai sama) dilewati kecuali dicentang.
-- Hak akses: Admin (`realization.correct`) dapat mengimpor semua PPTK; PPTK hanya baris atas namanya (baris PPTK lain diabaikan). Opsi "Impor baris valid saja" melewati baris bermasalah; setelah diperbaiki, unggah ulang tidak menggandakan yang sudah masuk.
+- **Hak akses: impor dari berkas KHUSUS Admin** (`realization.correct`), ditegakkan di antarmuka, di aksi server, dan di basis data (migrasi 0015). PPTK tetap menginput realisasi per transaksi. Opsi "Impor baris valid saja" melewati baris bermasalah; setelah diperbaiki, unggah ulang tidak menggandakan yang sudah masuk.
 - Dasar tahapan dapat dipilih: tanggal transaksi (bawaan) atau tanggal SP2D. Baris yang tanggal transaksi dan SP2D-nya berbeda tahapan ditandai.
 - Metode pengadaan dipetakan dari nama (mis. "e-Purchasing" → "E-Purchasing (Katalog Elektronik)"); yang ambigu ("Swakelola" → Tipe I–IV) atau belum ada ("Pengecualian") dapat dipilih/dikosongkan, dan Admin dapat membuatnya langsung.
 
@@ -56,3 +56,6 @@ Tanggal yang tersimpan sebagai angka serial Excel kini juga terbaca.
 
 ## 8. Pembersihan kode
 Dihapus karena sudah digantikan/tidak dirujuk: `importCsvAction`, `importCashPlansAction` (diganti panel impor dengan pratinjau), `correctDateAction` (diganti `correctDatesAction`), komponen `CashPlanForm`, `ScrollToRow`, `StackBar`, modul `lra.ts`, `loadReport`/`sumRows` di `reports.ts` (LRA memakai `lra-core`), `requirePermission`, `rowAllocation`, `quarterRoman`. Ditambah halaman galat ramah (`error.tsx`), `not-found.tsx`, dan cache singkat nama organisasi.
+
+## 9. Impor Admin: PPTK belum punya akun
+Realisasi melekat pada **butir anggaran**, bukan pada akun PPTK. Karena itu nama PPTK pada berkas yang belum punya akun **tidak lagi menolak baris**; hanya diberi catatan, dan pratinjau menawarkan tombol **"Buat akun PPTK"** (username diusulkan dari nama, kata sandi sementara acak tampil sekali). Bila PPTK pada berkas berbeda dari PPTK penugasan butir dan hanya ada satu butir untuk kombinasi itu, baris diterima dengan catatan; jika ada beberapa butir dan tidak ada yang cocok, baris ditolak.
