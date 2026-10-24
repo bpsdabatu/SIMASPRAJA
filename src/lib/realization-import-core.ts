@@ -320,20 +320,31 @@ export function planRealizationImport(raw: RawRow[], maps: MasterMaps, opt: Plan
     const fundId = maps.look.fundingByCode.get(r.funding.toLowerCase()) ?? maps.look.fundingByName.get(normName(r.funding));
     if (!fundId) return fail(`sumber dana "${r.funding}" tidak ditemukan di Data Master`);
     let pptkId: string | null = null;
-    if (r.pptk) { const p = resolvePptk(r.pptk, maps.look); if (!p.ok) return fail(p.reason); pptkId = p.id; }
+    let pptkUnresolved = false;
+    if (r.pptk) {
+      const p = resolvePptk(r.pptk, maps.look);
+      if (p.ok) pptkId = p.id;
+      // Admin: realisasi melekat pada BUTIR (bukan pada akun PPTK), jadi nama PPTK yang belum punya akun tidak memblokir; hanya dicatat.
+      else if (opt.isAdmin) pptkUnresolved = true;
+      else return fail(p.reason);
+    }
 
     // --- butir anggaran ---
     let cand = maps.items.filter((i) => !i.hasRup && i.subId === subId && i.accId === accId && i.fundId === fundId);
     if (cand.length === 0) return fail("butir anggaran (sub kegiatan + belanja + sumber dana) belum ada di Input Anggaran", { missingItem: { subId: subId!, accId: accId!, fundId, pptkId } });
+    let pptkMismatch = false;
     if (pptkId) {
       const mine = cand.filter((i) => i.pptkId === pptkId);
-      if (mine.length === 0) return fail(`butir ini ditugaskan ke PPTK lain, bukan "${r.pptk}"; samakan penugasan PPTK di Input Anggaran atau perbaiki berkas`);
-      cand = mine;
+      if (mine.length > 0) cand = mine;
+      // Satu butir hanya punya satu PPTK, sedangkan laporan dapat memuat PPTK berbeda pada kombinasi yang sama. Bila hanya ada SATU kandidat,
+      // realisasi tetap melekat pada butir itu (dicatat sebagai catatan); bila ada beberapa butir dan tidak ada yang cocok -> ditolak.
+      else if (cand.length === 1) pptkMismatch = true;
+      else return fail(`ada ${cand.length} butir untuk kombinasi ini dan tidak ada yang ditugaskan ke PPTK "${r.pptk}"; samakan penugasan PPTK di Input Anggaran atau perbaiki berkas`);
     }
-    if (cand.length > 1) return fail(`butir ambigu (${cand.length} butir dengan sub kegiatan + belanja + sumber dana${pptkId ? " + PPTK" : ""} yang sama); isi kolom PPTK atau bedakan uraian butir`);
+    if (cand.length > 1) return fail(`butir ambigu (${cand.length} butir dengan sub kegiatan + belanja + sumber dana${pptkId ? " + PPTK" : ""} yang sama)${pptkUnresolved ? `; PPTK "${r.pptk}" belum punya akun sehingga tidak dapat membedakan — buat akun PPTK lebih dulu` : "; isi kolom PPTK atau bedakan uraian butir"}`);
     const item = cand[0]!;
     if (!opt.isAdmin && item.pptkId !== opt.userId) return fail("bukan butir penugasan Anda (hanya Admin yang dapat mengimpor untuk semua PPTK)", { itemId: item.id });
-    if (!item.pptkId) return fail("butir belum memiliki PPTK penugasan", { itemId: item.id });
+    if (!item.pptkId && !opt.isAdmin) return fail("butir belum memiliki PPTK penugasan", { itemId: item.id });
 
     // --- tahapan menurut tanggal DPA ---
     const stageDate = opt.basis === "sp2d" && r.sp2dDate ? r.sp2dDate : r.txDate;
@@ -347,6 +358,8 @@ export function planRealizationImport(raw: RawRow[], maps: MasterMaps, opt: Plan
     const otherSt = other ? stageForDate(opt.versions, other).version : null;
     const straddle = !!(otherSt && otherSt.id !== st.version.id);
     const notes: string[] = [];
+    if (pptkMismatch) notes.push(`PPTK pada berkas (${r.pptk}) berbeda dari PPTK penugasan butir; realisasi tetap melekat pada butir`);
+    if (pptkUnresolved) notes.push(`PPTK "${r.pptk}" belum terdaftar sebagai akun (realisasi tetap tersimpan pada butir)`);
     if (!st.effective) notes.push("tanggal sebelum DPA pertama berlaku; dimasukkan ke Murni");
     if (straddle) notes.push(`transaksi dan SP2D berbeda tahapan (${opt.basis === "sp2d" ? "tanggal transaksi" : "tanggal SP2D"} jatuh pada ${versionLabel(otherSt!, opt.versions)})`);
 
@@ -429,6 +442,7 @@ export interface RealizationImportState {
   straddle?: number;
   versions?: { label: string; dpaDate: string | null; status: string }[];
   reasons?: ReasonSummary[];
+  pptkWithoutAccount?: { name: string; count: number }[];
   unresolved?: UnresolvedName[];
   neededItems?: { subCode: string; accCode: string; fund: string; pptk: string; rows: number; total: number }[];
   methods?: MethodGuess[];
