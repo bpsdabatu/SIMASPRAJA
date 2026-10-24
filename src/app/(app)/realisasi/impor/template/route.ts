@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 /** Templat impor realisasi: kolom sama dengan laporan "Pencarian Realisasi per Metode" + lembar referensi nama persis dari Data Master. */
 export async function GET() {
   const user = await getSessionUser();
-  if (!user || !(user.permissions.has("realization.edit") || user.permissions.has("realization.correct"))) return new NextResponse("Tidak berwenang", { status: 403 });
+  if (!user || !user.permissions.has("realization.correct")) return new NextResponse("Tidak berwenang", { status: 403 });
   const sb = await userClient();
   const [subs, accts, funds, methods, roles] = await Promise.all([
     sb.from("sub_activities").select("code, name").eq("is_active", true).order("code").limit(5000),

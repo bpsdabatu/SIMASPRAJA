@@ -10,7 +10,7 @@ import { LiveFilter } from "@/components/live-filter";
 import { formatAmount, formatRupiah } from "@/lib/format";
 import { normName } from "@/lib/budget-import-core";
 import type { RealizationImportState, RowStatus } from "@/lib/realization-import-core";
-import { importRealizationAction } from "./actions";
+import { createPptkAccountsAction, importRealizationAction, type CreatePptkState } from "./actions";
 
 const TONE: Record<RowStatus, { label: string; cls: string }> = {
   baru: { label: "Akan diimpor", cls: "bg-emerald-100 text-emerald-800" },
@@ -33,6 +33,35 @@ function downloadNeeded(items: NonNullable<RealizationImportState["neededItems"]
   a.download = "butir-anggaran-dibutuhkan.csv";
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+/** Nama PPTK pada berkas yang belum punya akun: buat sekali klik (kata sandi sementara tampil sekali). */
+function PptkAccountsNotice({ names }: { names: { name: string; count: number }[] }) {
+  const [res, action, pending] = useActionState<CreatePptkState, FormData>(createPptkAccountsAction, {});
+  return (
+    <div className="rounded-lg border border-sky-200 bg-sky-50/70 p-3 text-sm text-sky-950">
+      <p className="font-semibold">{names.length} PPTK pada berkas belum punya akun</p>
+      <p className="mt-0.5 text-xs text-slate-600">Impor tetap dapat dilakukan: realisasi tersimpan pada butir anggarannya. Agar PPTK dapat masuk dan butir ditugaskan, buat akunnya (juga tampil di Pengguna &amp; Peran dan Data Master › PPTK).</p>
+      <ul className="mt-1 list-disc pl-5 text-xs">{names.map((n) => <li key={n.name}>{n.name} · {n.count} baris</li>)}</ul>
+      {!res.created && (
+        <form action={action} className="mt-2">
+          <input type="hidden" name="names" value={JSON.stringify(names.map((n) => n.name))} />
+          <button type="submit" disabled={pending} className="inline-flex h-9 items-center gap-2 rounded-lg border border-sky-400 bg-white px-3 text-sm font-semibold text-sky-900 hover:bg-sky-100 disabled:opacity-60">
+            {pending ? <Loader2 size={14} className="animate-spin" aria-hidden /> : null} Buat akun PPTK ({names.length})
+          </button>
+        </form>
+      )}
+      {res.error && <p className="mt-2 text-xs font-medium text-red-700">{res.error}</p>}
+      {res.failed?.map((f) => <p key={f} className="mt-1 text-xs text-red-700">{f}</p>)}
+      {res.created && (
+        <div className="mt-2 overflow-x-auto rounded-lg bg-white p-2">
+          <p className="text-xs font-semibold text-emerald-800">Akun dibuat. Catat kata sandi sementara (hanya tampil sekali), lalu klik “Periksa dulu” lagi:</p>
+          <table className="mt-1 w-full text-left text-xs"><thead><tr><th className="pr-3">Nama</th><th className="pr-3">Username</th><th>Kata sandi sementara</th></tr></thead>
+            <tbody>{res.created.map((c) => <tr key={c.username}><td className="pr-3">{c.name}</td><td className="pr-3 font-mono">{c.username}</td><td className="select-all font-mono font-semibold">{c.password}</td></tr>)}</tbody></table>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function RealizationImportPanel({ canCreateMethods }: { canCreateMethods: boolean }) {
@@ -129,12 +158,14 @@ export function RealizationImportPanel({ canCreateMethods }: { canCreateMethods:
             </div>
           )}
 
-          {(state.unresolved ?? []).length > 0 && (
+          {(state.pptkWithoutAccount ?? []).length > 0 && <PptkAccountsNotice names={state.pptkWithoutAccount!} />}
+
+          {(state.unresolved ?? []).filter((u) => u.kind !== "pptk" || u.options.length > 0).length > 0 && (
             <div className="rounded-lg border border-amber-300 bg-amber-50/60 p-3">
               <p className="text-sm font-semibold text-amber-900">Cocokkan nama yang belum dikenali</p>
               <p className="text-xs text-slate-600">Nama berikut ada di berkas tetapi tidak persis sama dengan Data Master. Pilih padanannya, lalu klik “Periksa dulu” lagi.</p>
               <div className="mt-2 grid gap-3 sm:grid-cols-2">
-                {state.unresolved!.map((u) => {
+                {state.unresolved!.filter((u) => u.kind !== "pptk" || u.options.length > 0).map((u) => {
                   const key = `${u.kind}|${normName(u.name)}`;
                   return (
                     <label key={key} className="text-xs text-slate-600">

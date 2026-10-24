@@ -16,8 +16,8 @@ interface Batch { id: string; file_name: string; basis: string; rows_in_file: nu
 export default async function ImporRealisasiPage() {
   const { user, context } = await requireContext();
   const isAdmin = user.permissions.has("realization.correct");
-  if (!isAdmin && !user.permissions.has("realization.edit")) {
-    return <Card><div className="p-6 text-sm text-slate-600">Anda tidak berwenang mengimpor realisasi.</div></Card>;
+  if (!isAdmin) {
+    return <Card><div className="p-6 text-sm text-slate-600">Impor realisasi dari berkas hanya dapat dilakukan oleh Admin. PPTK menginput realisasi per transaksi di menu Input Realisasi.</div></Card>;
   }
   const supabase = await userClient();
   const { data: cv } = await supabase.from("budget_versions").select("fiscal_year_id").eq("id", context.versionId).maybeSingle();
@@ -38,7 +38,7 @@ export default async function ImporRealisasiPage() {
   const dpaOk = versions.some((v) => v.dpa_date);
   const checks = [
     { ok: nSub > 0 && nAcc > 0 && nFund > 0, text: `Data Master: ${nSub} sub kegiatan, ${nAcc} rekening belanja, ${nFund} sumber dana`, fix: "/master", fixLabel: "Data Master" },
-    { ok: isAdmin ? nPptk > 0 : true, text: isAdmin ? `Akun PPTK: ${nPptk}` : "Akun PPTK: diperiksa saat unggah", fix: "/master?tab=pptk", fixLabel: "Tambah PPTK" },
+    { ok: nPptk > 0, text: `Akun PPTK: ${nPptk}${nPptk === 0 ? " (boleh dibuat dari berkas saat Periksa dulu)" : ""}`, fix: "/master?tab=pptk", fixLabel: "Tambah PPTK" },
     { ok: nItems > 0, text: `Butir anggaran TA ${context.year}: ${nItems}`, fix: "/anggaran", fixLabel: "Input Anggaran" },
     { ok: dpaOk, text: versions.length ? `Tanggal DPA: ${versions.map((v) => `${v.stage_code} v${v.version_no} ${v.dpa_date ? v.dpa_date.split("-").reverse().join("/") : "belum diisi"}`).join(" · ")}` : "Belum ada versi anggaran", fix: "/anggaran", fixLabel: "Isi tanggal DPA" },
   ];
@@ -66,7 +66,7 @@ export default async function ImporRealisasiPage() {
         </ul>
       </Card>
       <Card>
-        <CardHeader title="Unggah laporan realisasi" description={isAdmin ? "Admin dapat mengimpor untuk semua PPTK. Setiap unggahan tercatat sebagai batch (berkas, pelaku, waktu); mengunggah ulang berkas yang sama tidak menggandakan data." : "Hanya baris atas nama PPTK Anda yang diproses; baris PPTK lain diabaikan. Setiap unggahan tercatat sebagai batch."} />
+        <CardHeader title="Unggah laporan realisasi" description="Khusus Admin. Setiap unggahan tercatat sebagai batch (berkas, pelaku, waktu); mengunggah ulang berkas yang sama tidak menggandakan data." />
         <div className="p-5"><RealizationImportPanel canCreateMethods={user.permissions.has("master.manage")} /></div>
       </Card>
       <Card>

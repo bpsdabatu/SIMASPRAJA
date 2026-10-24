@@ -9,6 +9,8 @@ import { friendlyError, str } from "@/lib/action-utils";
 import { readTable } from "@/lib/spreadsheet";
 import { todayWIB } from "@/lib/quarterly-core";
 import { normName, resolvePptk, type Lookups } from "@/lib/budget-import-core";
+import { createAccount, tempPassword } from "@/lib/account-admin";
+import { usernameFromName } from "@/lib/master-seed";
 import {
   guessMethods, matchName, parseRealizationReport, planRealizationImport, reconcileRecap, versionLabel,
   type BudgetItemRef, type MasterMaps, type NameEntry, type PlanOptions, type RawRow, type RealizationImportState, type StageVersion, type UnresolvedName,
@@ -24,8 +26,9 @@ const SHOW = 400;
  */
 export async function importRealizationAction(_prev: RealizationImportState, fd: FormData): Promise<RealizationImportState> {
   const { user, context } = await requireContext();
+  // Impor realisasi massal KHUSUS Admin (hak koreksi realisasi); ditegakkan lagi di basis data (migrasi 0015).
   const isAdmin = user.permissions.has("realization.correct");
-  if (!isAdmin && !user.permissions.has("realization.edit")) return { phase: "error", error: "Anda tidak berwenang mengimpor realisasi." };
+  if (!isAdmin) return { phase: "error", error: "Impor realisasi dari berkas hanya dapat dilakukan oleh Admin." };
   const apply = str(fd, "intent", 10) === "apply";
   const basis = str(fd, "basis", 10) === "sp2d" ? "sp2d" : "transaksi";
   const includeSimilar = str(fd, "includeSimilar", 5) === "true";
@@ -73,7 +76,6 @@ export async function importRealizationAction(_prev: RealizationImportState, fd:
     const p = Array.isArray(r.profiles) ? r.profiles[0] : r.profiles;
     if (p && p.status === "active") pptk.push({ id: p.id, fullName: p.full_name, username: p.username });
   }
-  if (!pptk.some((p) => p.id === user.id) && !isAdmin) pptk.push({ id: user.id, fullName: user.fullName, username: user.username });
 
   const look: Lookups = {
     subs: new Map(subs.map((r) => [String(r.code).trim().toLowerCase(), r.id as string])),
@@ -124,17 +126,8 @@ export async function importRealizationAction(_prev: RealizationImportState, fd:
   const byNameSub = new Map(subMap), byNameAcc = new Map(accMap);
   // PPTK (hanya Admin yang memerlukan pemetaan; PPTK biasa hanya diproses barisnya sendiri di bawah)
   resolveKind("pptk", tally((r) => r.pptk), (_n, raw, id) => look.pptkByUsername.set(raw.toLowerCase(), id), (raw) => resolvePptk(raw, look).ok);
-  if (!isAdmin) unresolved.splice(0, unresolved.length); // tidak relevan bagi PPTK biasa
 
-  // ---------- PPTK biasa: hanya barisnya sendiri diproses ----------
-  let rows: RawRow[] = allRows;
-  let ignoredOthers = 0;
-  if (!isAdmin) {
-    const mine = rows.filter((r) => { if (!r.pptk) return false; const p = resolvePptk(r.pptk, look); return p.ok && p.id === user.id; });
-    ignoredOthers = rows.length - mine.length;
-    rows = mine;
-    if (rows.length === 0) return { phase: "error", error: `Tidak ada baris atas nama PPTK Anda (${user.fullName}) pada berkas. ${ignoredOthers} baris milik PPTK lain diabaikan.` };
-  }
+  const rows: RawRow[] = allRows;
   const tallyRows = (pick: (r: RawRow) => string) => {
     const m = new Map<string, { name: string; count: number }>();
     for (const r of rows) { const n = pick(r); if (!n) continue; const e = m.get(normName(n)) ?? { name: n, count: 0 }; e.count++; m.set(normName(n), e); }
@@ -198,15 +191,15 @@ export async function importRealizationAction(_prev: RealizationImportState, fd:
     const e = need.get(k) ?? { subCode: subCode.get(r.missingItem.subId) ?? "", accCode: accCode.get(r.missingItem.accId) ?? "", fund: fundName.get(r.missingItem.fundId) ?? "", pptk: r.missingItem.pptkId ? pptkName.get(r.missingItem.pptkId) ?? r.pptk : r.pptk, rows: 0, total: 0 };
     e.rows++; e.total = Math.round((e.total + r.amount) * 100) / 100; need.set(k, e);
   }
+  const pptkWithoutAccount = unresolved.filter((u) => u.kind === "pptk").map((u) => ({ name: u.name, count: u.count }));
   const view = {
-    fileName: file.name.slice(0, 200), reconcile, reasons: plan.reasons, unresolved, neededItems: [...need.values()], counts: plan.counts, total: plan.total, byStage: plan.byStage, straddle: plan.straddle,
+    fileName: file.name.slice(0, 200), reconcile, reasons: plan.reasons, unresolved, pptkWithoutAccount, neededItems: [...need.values()], counts: plan.counts, total: plan.total, byStage: plan.byStage, straddle: plan.straddle,
     versions: versions.sort((a, b) => (a.dpaDate ?? "9").localeCompare(b.dpaDate ?? "9")).map((v) => ({ label: versionLabel(v, versions), dpaDate: v.dpaDate, status: v.status })),
     methods: guessesOut, methodOptions: methodRefs, canCreateMethods,
     rows: plan.rows.slice(0, SHOW), truncated: plan.rows.length > SHOW,
   } satisfies Partial<RealizationImportState>;
-  const note = ignoredOthers ? ` ${ignoredOthers} baris milik PPTK lain diabaikan.` : "";
 
-  if (!apply) return { phase: "preview", ...view, error: note.trim() || undefined };
+  if (!apply) return { phase: "preview", ...view };
   if (plan.counts.galat > 0 && !onlyValid) {
     return { phase: "error", ...view, error: `${plan.counts.galat} baris bermasalah. Perbaiki berkas, atau centang "Impor baris valid saja" untuk melewati baris bermasalah (baris yang dilewati dapat diunggah ulang setelah diperbaiki; baris yang sudah masuk tidak akan ganda).` };
   }
@@ -253,3 +246,39 @@ export async function importRealizationAction(_prev: RealizationImportState, fd:
   for (const p of ["/realisasi", "/dashboard", "/lra", "/anggaran-kas"]) revalidatePath(p);
   return { phase: "done", ...view, applied: { imported, skipped, gagal, batchId: String(batchId), amount: amount / 100 } };
 }
+
+export interface CreatePptkState { created?: { username: string; name: string; password: string }[]; failed?: string[]; error?: string }
+
+/**
+ * Membuat akun PPTK dari nama-nama pada berkas yang belum punya akun (Admin dengan hak kelola pengguna).
+ * Username diusulkan dari nama; kata sandi sementara acak tampil SEKALI. Akun yang sama langsung tampil di Pengguna & Peran dan Data Master › PPTK.
+ */
+export async function createPptkAccountsAction(_prev: CreatePptkState, fd: FormData): Promise<CreatePptkState> {
+  const { user } = await requireContext();
+  if (!user.permissions.has("users.manage") || !user.permissions.has("realization.correct")) return { error: "Hanya Admin yang dapat membuat akun PPTK." };
+  let names: string[] = [];
+  try { const j = JSON.parse(str(fd, "names", 10000) || "[]"); if (Array.isArray(j)) names = j.map((x) => cleanName(String(x))).filter(Boolean); } catch { /* abaikan */ }
+  names = [...new Set(names)].slice(0, 50);
+  if (names.length === 0) return { error: "Tidak ada nama PPTK untuk dibuat." };
+
+  const created: NonNullable<CreatePptkState["created"]> = [];
+  const failed: string[] = [];
+  for (const name of names) {
+    const base = usernameFromName(name) || "pptk";
+    let done = false, lastErr = "";
+    for (let n = 0; n < 6 && !done; n++) {
+      const username = (n === 0 ? base : `${base.slice(0, 29)}${n + 1}`).slice(0, 32);
+      const password = tempPassword();
+      const res = await createAccount({ id: user.id, organizationId: user.organizationId }, { username, fullName: name, roles: ["pptk"], password });
+      if (res.ok) { created.push({ username, name, password }); done = true; }
+      else { lastErr = res.error; if (!/sudah dipakai/.test(res.error)) break; }
+    }
+    if (!done) {
+      failed.push(`${name}: ${lastErr}`);
+      if (/Konfigurasi server|Tabel pengguna belum ada|kunci server/i.test(lastErr)) break; // masalah umum: hentikan
+    }
+  }
+  revalidatePath("/master"); revalidatePath("/pengguna");
+  return { created, failed: failed.length ? failed : undefined };
+}
+const cleanName = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 150);

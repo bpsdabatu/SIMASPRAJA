@@ -96,7 +96,7 @@ export default async function RealisasiPage({ searchParams }: { searchParams: Pr
         title="Input Realisasi"
         actions={(user.permissions.has("realization.edit") || user.permissions.has("realization.correct")) ? (
           <div className="flex flex-wrap gap-2">
-            <Link href="/realisasi/impor" className={buttonVariants({ variant: "accent" })}><FileUp size={15} aria-hidden /> Impor dari berkas</Link>
+            {user.permissions.has("realization.correct") && <Link href="/realisasi/impor" className={buttonVariants({ variant: "accent" })}><FileUp size={15} aria-hidden /> Impor dari berkas</Link>}
             {user.permissions.has("realization.edit") && <Link href="/realisasi/penyedia" className={buttonVariants({ variant: "outline" })}>Kelola penyedia</Link>}
           </div>
         ) : undefined}
