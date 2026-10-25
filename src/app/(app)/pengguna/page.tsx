@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
-import { Plus, ShieldCheck } from "lucide-react";
+import { Download, Plus, ShieldCheck } from "lucide-react";
+import { buttonVariants } from "@/components/ui/button";
+import { loadTempPasswords } from "@/lib/auth/temp-credential";
 import { requireModule } from "@/lib/auth/guard";
 import { userClient } from "@/lib/supabase/server";
 import { ROLE_LABEL } from "@/lib/nav";
@@ -9,7 +11,7 @@ import { Field, Input } from "@/components/ui/input";
 import { EmptyState, Flash, PageHeader, TableWrap } from "@/components/ui/page";
 import { ConfirmSubmit, SubmitButton } from "@/components/ui/submit-button";
 import { createUserAction, resetPasswordAction, setRolesAction, setUserStatusAction } from "./actions";
-import { AccountDiagnostics, PasswordInput } from "./account-tools";
+import { AccountDiagnostics, PasswordInput, SecretCell } from "./account-tools";
 
 export const metadata: Metadata = { title: "Pengguna & Peran" };
 export const dynamic = "force-dynamic";
@@ -29,18 +31,19 @@ function RoleChecks({ current = [] }: { current?: string[] }) {
   );
 }
 
-interface Row { id: string; username: string; full_name: string; nip: string | null; position_title: string | null; status: keyof typeof STATUS; last_login_at: string | null; user_roles: { role_code: string }[] }
+interface Row { id: string; username: string; full_name: string; nip: string | null; position_title: string | null; status: keyof typeof STATUS; last_login_at: string | null; must_change_password: boolean; user_roles: { role_code: string }[] }
 
 export default async function PenggunaPage({ searchParams }: { searchParams: Promise<{ ok?: string; err?: string }> }) {
   const { user } = await requireModule("users.manage");
   const sp = await searchParams;
   const sb = await userClient();
-  const { data, error } = await sb.from("profiles").select("id, username, full_name, nip, position_title, status, last_login_at, user_roles(role_code)").order("full_name").limit(1000);
+  const { data, error } = await sb.from("profiles").select("id, username, full_name, nip, position_title, status, last_login_at, must_change_password, user_roles(role_code)").order("full_name").limit(1000);
   const rows = (data ?? []) as unknown as Row[];
+  const temp = await loadTempPasswords(rows.filter((r) => r.must_change_password).map((r) => r.id));
 
   return (
     <div className="mx-auto max-w-7xl space-y-6">
-      <PageHeader eyebrow="Administrasi" title="Pengguna & Peran" description="Kelola akun, peran, dan kata sandi sementara. Anda tidak dapat mengubah peran atau status akun sendiri." />
+      <PageHeader eyebrow="Administrasi" title="Pengguna & Peran" description="Rekap seluruh akun (username, peran, status) dan kata sandi sementara bagi akun yang belum menggantinya. Reset cepat per akun menghasilkan kata sandi acak yang langsung tampil di sini. Anda tidak dapat mengubah peran atau status akun sendiri." />
       <Flash ok={sp.ok} err={sp.err} />
 
       <Card>
@@ -68,11 +71,11 @@ export default async function PenggunaPage({ searchParams }: { searchParams: Pro
       </Card>
 
       <Card>
-        <CardHeader title={`Pengguna (${rows.length})`} />
+        <CardHeader title={`Pengguna (${rows.length})`} description="Kata sandi yang sudah diganti pengguna sendiri tidak dapat dilihat (hanya tersimpan sebagai hash di Supabase Auth); gunakan Reset untuk membuat yang baru." actions={<><a href="/pengguna/export?format=xlsx" className={buttonVariants({ variant: "outline", size: "sm" })}><Download size={14} aria-hidden /> Excel</a><a href="/pengguna/export?format=csv" className={buttonVariants({ variant: "outline", size: "sm" })}><Download size={14} aria-hidden /> CSV</a></>} />
         {error ? <EmptyState title="Data tidak dapat dimuat">Muat ulang halaman.</EmptyState> : rows.length === 0 ? <EmptyState title="Belum ada pengguna" /> : (
           <TableWrap>
             <table className="table-base">
-              <thead><tr><th>Pengguna</th><th>Peran</th><th>Status</th><th>Terakhir masuk</th><th className="text-right">Aksi</th></tr></thead>
+              <thead><tr><th>Pengguna</th><th>Username</th><th>Peran</th><th>Status</th><th>Kata sandi sementara</th><th>Terakhir masuk</th><th className="text-right">Aksi</th></tr></thead>
               <tbody>
                 {rows.map((r) => {
                   const roles = r.user_roles.map((x) => x.role_code);
@@ -81,8 +84,10 @@ export default async function PenggunaPage({ searchParams }: { searchParams: Pro
                   return (
                     <tr key={r.id}>
                       <td><span className="font-medium">{r.full_name}</span>{self && <Badge tone="gold" className="ml-2">Anda</Badge>}<span className="block text-xs text-slate-500">@{r.username}{r.nip ? ` · NIP ${r.nip}` : ""}{r.position_title ? ` · ${r.position_title}` : ""}</span></td>
+                      <td className="whitespace-nowrap font-mono text-[13px]">{r.username}</td>
                       <td><div className="flex flex-wrap gap-1">{roles.map((x) => <Badge key={x} tone="navy">{ROLE_LABEL[x] ?? x}</Badge>)}{roles.length === 0 && <span className="text-slate-400">—</span>}</div></td>
                       <td><Badge tone={tone}>{label}</Badge></td>
+                      <td className="text-[13px]">{temp.map.get(r.id) ? <SecretCell value={temp.map.get(r.id)!} /> : r.must_change_password ? <span className="text-amber-700">Belum diganti (klik Reset untuk membuat yang baru)</span> : <span className="text-slate-400">Sudah diganti pengguna</span>}</td>
                       <td className="whitespace-nowrap text-[13px] text-slate-600">{r.last_login_at ? formatDateTimeWIB(r.last_login_at) : "Belum pernah"}</td>
                       <td className="text-right">
                         {self ? <span className="text-xs text-slate-400">—</span> : (
@@ -96,7 +101,7 @@ export default async function PenggunaPage({ searchParams }: { searchParams: Pro
                               </form>
                               <form action={resetPasswordAction} className="space-y-2 border-t border-slate-100 pt-3">
                                 <input type="hidden" name="userId" value={r.id} />
-                                <Field label="Atur ulang kata sandi sementara" htmlFor={`pw-${r.id}`}><PasswordInput id={`pw-${r.id}`} /></Field>
+                                <Field label="Atur ulang kata sandi sementara" htmlFor={`pw-${r.id}`} hint="Kosongkan untuk dibuat acak otomatis."><PasswordInput id={`pw-${r.id}`} required={false} /></Field>
                                 <ConfirmSubmit size="sm" variant="outline" message="Atur ulang kata sandi? Semua sesi pengguna ini akan diakhiri.">Atur ulang</ConfirmSubmit>
                               </form>
                               <form action={setUserStatusAction} className="border-t border-slate-100 pt-3">

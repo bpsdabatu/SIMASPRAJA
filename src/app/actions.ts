@@ -72,6 +72,7 @@ export async function changePasswordAction(_prev: FormState, formData: FormData)
 
   const admin = adminClient();
   await admin.from("profiles").update({ must_change_password: false }).eq("id", user.id);
+  await admin.from("account_temp_credentials").delete().eq("profile_id", user.id); // kata sandi pilihan pengguna tidak disimpan
   await admin.from("audit_logs").insert({
     action: "PASSWORD_CHANGED",
     actor_id: user.id,

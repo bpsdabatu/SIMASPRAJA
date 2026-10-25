@@ -1,12 +1,12 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import { CheckCircle2, Loader2, ShieldCheck, Wand2, XCircle } from "lucide-react";
+import { CheckCircle2, Copy, Eye, EyeOff, Loader2, ShieldCheck, Wand2, XCircle } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { diagnoseAccountsAction, type DiagnoseState } from "./actions";
 
 /** Kolom kata sandi sementara dengan tombol "Buat acak" (memenuhi kebijakan: huruf besar, kecil, angka, simbol; dibuat di browser). */
-export function PasswordInput({ id, name = "password" }: { id: string; name?: string }) {
+export function PasswordInput({ id, name = "password", required = true }: { id: string; name?: string; required?: boolean }) {
   const [v, setV] = useState("");
   const gen = () => {
     const U = "ABCDEFGHJKLMNPQRSTUVWXYZ", L = "abcdefghijkmnopqrstuvwxyz", D = "23456789", S = "!@#$%*?-_";
@@ -18,7 +18,7 @@ export function PasswordInput({ id, name = "password" }: { id: string; name?: st
   };
   return (
     <div className="flex gap-2">
-      <Input id={id} name={name} type="text" required minLength={10} maxLength={128} autoComplete="off" spellCheck={false} value={v} onChange={(e) => setV(e.target.value)} />
+      <Input id={id} name={name} type="text" required={required} minLength={required ? 10 : undefined} maxLength={128} autoComplete="off" spellCheck={false} value={v} onChange={(e) => setV(e.target.value)} />
       <button type="button" onClick={gen} className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-lg border border-navy-300 bg-white px-3 text-sm font-semibold text-navy-800 hover:bg-navy-50"><Wand2 size={14} aria-hidden /> Buat acak</button>
     </div>
   );
@@ -46,5 +46,20 @@ export function AccountDiagnostics() {
         </ul>
       )}
     </div>
+  );
+}
+
+/** Kata sandi sementara: disembunyikan, dapat ditampilkan dan disalin oleh admin. */
+export function SecretCell({ value }: { value: string }) {
+  const [show, setShow] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copy = async () => { try { await navigator.clipboard.writeText(value); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard tidak tersedia */ } };
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[12px] tracking-wide">{show ? value : "••••••••••"}</code>
+      <button type="button" onClick={() => setShow((v) => !v)} aria-label={show ? "Sembunyikan kata sandi" : "Tampilkan kata sandi"} className="rounded p-1 text-slate-500 hover:bg-slate-100">{show ? <EyeOff size={14} aria-hidden /> : <Eye size={14} aria-hidden />}</button>
+      <button type="button" onClick={copy} aria-label="Salin kata sandi" className="rounded p-1 text-slate-500 hover:bg-slate-100"><Copy size={14} aria-hidden /></button>
+      {copied && <span className="text-[11px] font-medium text-emerald-700">Tersalin</span>}
+    </span>
   );
 }

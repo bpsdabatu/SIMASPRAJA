@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { Loader2, Search } from "lucide-react";
-import { MONTHS_SHORT, allocation, cents, parseAmount, parseLoose, spreadByQuarter, spreadEvenly } from "@/lib/cash-core";
+import { TW_LABEL, allocation, cents, parseAmount, parseLoose, quarterSums, quartersToMonths, spreadQuarters } from "@/lib/cash-core";
 import { cashStatusAction, deleteCashPlanAction, saveCashPlansBulkAction } from "./actions";
 
 export type PlanStatus = "none" | "draft" | "submitted" | "returned" | "final";
@@ -49,20 +49,22 @@ function Btn({ intent, children, tone, disabled }: { intent: "draft" | "submit";
 export function CashPlanGrid({ versionId, rows, canEdit, canSubmit, canFinalize }: {
   versionId: string; rows: GridRow[]; canEdit: boolean; canSubmit: boolean; canFinalize: boolean;
 }) {
-  const [raw, setRaw] = useState<Record<string, string[]>>(() => Object.fromEntries(rows.map((r) => [r.itemId, r.months.map(toRaw)])));
+  const [raw, setRaw] = useState<Record<string, string[]>>(() => Object.fromEntries(rows.map((r) => [r.itemId, quarterSums(r.months).map(toRaw)])));
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<"all" | "todo" | "dirty" | "locked">("all");
   const tableRef = useRef<HTMLTableElement>(null);
 
   const calc = useMemo(() => rows.map((r) => {
-    const cells = raw[r.itemId] ?? r.months.map(toRaw);
+    const oldQ = quarterSums(r.months);
+    const cells = raw[r.itemId] ?? oldQ.map(toRaw);
     const parsed = cells.map(parseAmount);
     const invalid = parsed.some((v) => Number.isNaN(v));
-    const months = parsed.map((v) => (Number.isNaN(v) ? 0 : v));
+    const quarters = parsed.map((v) => (Number.isNaN(v) ? 0 : v));
+    const months = quartersToMonths(quarters); // disimpan sebagai 12 periode (tiap triwulan dibagi 3)
     const a = allocation(r.pagu, months);
     const editable = canEdit && r.mine && (r.status === "none" || r.status === "draft" || r.status === "returned");
-    const dirty = months.some((v, i) => cents(v) !== cents(r.months[i] ?? 0));
-    return { r, months, invalid, a, editable, dirty, over: a.state === "lebih" };
+    const dirty = quarters.some((v, i) => cents(v) !== cents(oldQ[i] ?? 0));
+    return { r, months, quarters, invalid, a, editable, dirty, over: a.state === "lebih" };
   }), [rows, raw, canEdit]);
 
   const dirtyRows = calc.filter((c) => c.editable && c.dirty);
@@ -92,15 +94,15 @@ export function CashPlanGrid({ versionId, rows, canEdit, canSubmit, canFinalize 
   const setRow = (id: string, vals: number[]) => setRaw((s) => ({ ...s, [id]: vals.map(toRaw) }));
   const setCell = (id: string, i: number, v: string) => setRaw((s) => ({ ...s, [id]: (s[id] ?? []).map((x, k) => (k === i ? v : x)) }));
 
-  const fillEmpty = (mode: "even" | "quarter") => setRaw((s) => {
+  const fillEmpty = () => setRaw((s) => {
     const next = { ...s };
-    for (const c of visible) if (c.editable && c.a.state === "kosong" && c.r.pagu > 0) next[c.r.itemId] = (mode === "even" ? spreadEvenly(c.r.pagu) : spreadByQuarter(c.r.pagu)).map(toRaw);
+    for (const c of visible) if (c.editable && c.a.state === "kosong" && c.r.pagu > 0) next[c.r.itemId] = spreadQuarters(c.r.pagu).map(toRaw);
     return next;
   });
 
   const focusCell = (row: number, col: number) => tableRef.current?.querySelector<HTMLInputElement>(`input[data-r="${row}"][data-c="${col}"]`)?.focus();
 
-  /** Tempel blok dari Excel (tab/baris baru): mengisi bulan berurutan dan baris berikutnya yang dapat diedit. */
+  /** Tempel blok dari Excel (tab/baris baru): mengisi triwulan berurutan dan baris berikutnya yang dapat diedit. */
   const onPaste = (e: React.ClipboardEvent<HTMLInputElement>, vIdx: number, col: number) => {
     const text = e.clipboardData.getData("text");
     if (!/[\t\n]/.test(text.trim())) return; // satu nilai: perilaku bawaan
@@ -113,7 +115,7 @@ export function CashPlanGrid({ versionId, rows, canEdit, canSubmit, canFinalize 
         if (!target || !target.editable) return;
         const cur = [...(next[target.r.itemId] ?? [])];
         line.split("\t").forEach((cell, ci) => {
-          if (col + ci > 11) return;
+          if (col + ci > 3) return;
           const v = parseLoose(cell);
           cur[col + ci] = Number.isNaN(v) ? cell.trim() : toRaw(v);
         });
@@ -123,7 +125,7 @@ export function CashPlanGrid({ versionId, rows, canEdit, canSubmit, canFinalize 
     });
   };
 
-  const totals = MONTHS_SHORT.map((_, i) => calc.reduce((s, c) => s + cents(c.months[i] ?? 0), 0) / 100);
+  const totals = TW_LABEL.map((_, i) => calc.reduce((s, c) => s + cents(c.quarters[i] ?? 0), 0) / 100);
   const grand = totals.reduce((a, b) => a + cents(b), 0) / 100;
   const paguAll = calc.reduce((s, c) => s + cents(c.r.pagu), 0) / 100;
   const editableCount = calc.filter((c) => c.editable).length;
@@ -148,8 +150,7 @@ export function CashPlanGrid({ versionId, rows, canEdit, canSubmit, canFinalize 
         </select>
         {canEdit && editableCount > 0 && (
           <>
-            <button type="button" onClick={() => fillEmpty("even")} className="h-9 rounded-lg border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 hover:bg-slate-50">Bagi rata 12 bln (yang kosong)</button>
-            <button type="button" onClick={() => fillEmpty("quarter")} className="h-9 rounded-lg border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 hover:bg-slate-50">Bagi rata TW (yang kosong)</button>
+            <button type="button" onClick={fillEmpty} className="h-9 rounded-lg border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 hover:bg-slate-50">Bagi rata 4 TW (yang kosong)</button>
           </>
         )}
         {canEdit && (
@@ -169,7 +170,7 @@ export function CashPlanGrid({ versionId, rows, canEdit, canSubmit, canFinalize 
       )}
       {canEdit && (
         <p className="text-xs text-slate-500">
-          Tips: Tab/Enter untuk berpindah sel · tempel (Ctrl+V) blok angka dari Excel · ÷12 = bagi rata pagu ke 12 bulan · ÷TW = bagi rata per triwulan. Total kas boleh kurang dari pagu, tidak boleh melebihi pagu.
+          Tips: Tab/Enter untuk berpindah sel · tempel (Ctrl+V) blok angka dari Excel (4 kolom triwulan) · ÷TW = bagi rata pagu ke 4 triwulan. Total kas boleh kurang dari pagu, tidak boleh melebihi pagu.
           {dirtyRows.length > 0 && <b className="ml-1 text-amber-700">{dirtyRows.length} butir belum disimpan.</b>}
         </p>
       )}
@@ -180,14 +181,14 @@ export function CashPlanGrid({ versionId, rows, canEdit, canSubmit, canFinalize 
             <tr>
               <th className="sticky left-0 z-10 min-w-[15rem] bg-slate-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">Rekening / uraian</th>
               <th className={th}>Pagu</th>
-              {MONTHS_SHORT.map((m) => <th key={m} className={th}>{m}</th>)}
+              {TW_LABEL.map((m) => <th key={m} className={th}>{m}</th>)}
               <th className={th}>Total kas</th>
               <th className={th}>Sisa</th>
               <th className="px-2 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">Status / aksi</th>
             </tr>
           </thead>
           <tbody>
-            {visible.length === 0 && <tr><td colSpan={17} className="px-4 py-8 text-center text-sm text-slate-500">Tidak ada butir yang cocok.</td></tr>}
+            {visible.length === 0 && <tr><td colSpan={9} className="px-4 py-8 text-center text-sm text-slate-500">Tidak ada butir yang cocok.</td></tr>}
             {visible.map((c, vIdx) => {
               const { r, a } = c;
               const header = r.subCode !== lastSub ? (lastSub = r.subCode, true) : false;
@@ -196,7 +197,7 @@ export function CashPlanGrid({ versionId, rows, canEdit, canSubmit, canFinalize 
               return (
                 <Fragment key={r.itemId}>
                   {header && (
-                    <tr className="bg-navy-50/70"><td colSpan={17} className="px-3 py-1.5 text-xs font-semibold text-navy-800"><span className="font-mono">{r.subCode}</span> — {r.subName}</td></tr>
+                    <tr className="bg-navy-50/70"><td colSpan={9} className="px-3 py-1.5 text-xs font-semibold text-navy-800"><span className="font-mono">{r.subCode}</span> — {r.subName}</td></tr>
                   )}
                   <tr className={`border-t border-slate-100 align-top ${rowTone}`}>
                     <td className={`sticky left-0 z-10 min-w-[15rem] max-w-[20rem] px-3 py-1.5 ${rowTone || "bg-white"}`}>
@@ -207,7 +208,7 @@ export function CashPlanGrid({ versionId, rows, canEdit, canSubmit, canFinalize 
                       {c.over && <p role="alert" className="mt-0.5 text-[11px] font-medium text-red-700">Melebihi pagu {rp(Math.abs(a.sisa))}.</p>}
                     </td>
                     <td className="whitespace-nowrap px-1.5 py-1.5 text-right text-[13px] tabular-nums text-slate-900">{nf0.format(r.pagu)}</td>
-                    {MONTHS_SHORT.map((m, i) => (
+                    {TW_LABEL.map((m, i) => (
                       <td key={m} className="px-0.5 py-1">
                         {c.editable ? (
                           <input
@@ -218,10 +219,10 @@ export function CashPlanGrid({ versionId, rows, canEdit, canSubmit, canFinalize 
                             onFocus={(e) => e.currentTarget.select()}
                             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); focusCell(vIdx + (e.shiftKey ? -1 : 1), i); } }}
                             aria-invalid={Number.isNaN(parseAmount(raw[r.itemId]?.[i] ?? ""))}
-                            className={`h-8 w-[5.6rem] rounded-md border px-1.5 text-right text-xs tabular-nums focus:outline-none focus:ring-2 disabled:bg-slate-100 ${Number.isNaN(parseAmount(raw[r.itemId]?.[i] ?? "")) ? "border-red-400 focus:ring-red-200" : "border-slate-300 bg-white focus:border-navy-600 focus:ring-navy-200"}`}
+                            className={`h-8 w-[8rem] rounded-md border px-1.5 text-right text-xs tabular-nums focus:outline-none focus:ring-2 disabled:bg-slate-100 ${Number.isNaN(parseAmount(raw[r.itemId]?.[i] ?? "")) ? "border-red-400 focus:ring-red-200" : "border-slate-300 bg-white focus:border-navy-600 focus:ring-navy-200"}`}
                           />
                         ) : (
-                          <span className="block w-[5.6rem] px-1.5 text-right text-xs tabular-nums text-slate-700">{short(r.months[i] ?? 0)}</span>
+                          <span className="block w-[8rem] px-1.5 text-right text-xs tabular-nums text-slate-700">{short(quarterSums(r.months)[i] ?? 0)}</span>
                         )}
                       </td>
                     ))}
@@ -231,13 +232,12 @@ export function CashPlanGrid({ versionId, rows, canEdit, canSubmit, canFinalize 
                       <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${st.cls}`}>{st.label}{r.rev > 1 ? ` · rev ${r.rev}` : ""}</span>
                       {c.editable && r.pagu > 0 && (
                         <div className="mt-1 flex flex-wrap gap-1">
-                          <button type="button" title="Bagi rata pagu ke 12 bulan" onClick={() => setRow(r.itemId, spreadEvenly(r.pagu))} className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50">÷12</button>
-                          <button type="button" title="Bagi rata per triwulan" onClick={() => setRow(r.itemId, spreadByQuarter(r.pagu))} className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50">÷TW</button>
-                          <button type="button" title="Kosongkan baris" onClick={() => setRow(r.itemId, Array(12).fill(0))} className="rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-slate-100">✕</button>
+                          <button type="button" title="Bagi rata pagu ke 4 triwulan" onClick={() => setRow(r.itemId, spreadQuarters(r.pagu))} className="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50">÷TW</button>
+                          <button type="button" title="Kosongkan baris" onClick={() => setRow(r.itemId, Array(4).fill(0))} className="rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-slate-100">✕</button>
                         </div>
                       )}
                       {r.planId && r.mine && canEdit && (r.status === "draft" || r.status === "returned") && (
-                        <form action={deleteCashPlanAction} className="mt-1" onSubmit={(e) => { if (!window.confirm("Hapus draf anggaran kas butir ini? Isian bulanan akan dikosongkan.")) e.preventDefault(); }}>
+                        <form action={deleteCashPlanAction} className="mt-1" onSubmit={(e) => { if (!window.confirm("Hapus draf anggaran kas butir ini? Isian triwulan akan dikosongkan.")) e.preventDefault(); }}>
                           <input type="hidden" name="versionId" value={versionId} /><input type="hidden" name="planId" value={r.planId} />
                           <button className="text-[11px] font-medium text-red-700 underline">Hapus draf</button>
                         </form>

@@ -9,13 +9,28 @@ import { normHeader, readTable } from "@/lib/spreadsheet";
 import { requireModule as requirePerm } from "@/lib/auth/guard";
 import { parseBulkPayload } from "@/lib/cash-bulk";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { quartersToMonths } from "@/lib/cash-core";
+import { readCashTable } from "@/lib/cash-file";
+import { saveManyAsAdmin } from "@/lib/cash-admin-write";
 import { fetchAll } from "@/lib/fetch-all";
 import {
-  planCashAdjust, planCashFromRealization, planCashImport, resolveCashHeaders,
+  planCashAdjust, planCashByStage, planCashFromRealization, planCashImport, resolveCashHeaders, type StageCode,
   type AdjustSource, type AdjustTarget, type RealizedByItem, type CashAdjustState, type CashImportState, type CashItem, type CashItemStatus,
 } from "@/lib/cash-import-core";
 
 const BACK = "/anggaran-kas";
+
+/**
+ * Pelaksana anggaran kas: PPTK (izin cashplan.edit, hanya butir penugasannya) ATAU ADMIN (mendistribusikan/mengatur seluruh butir ber-PPTK;
+ * ADMIN tidak punya cashplan.edit sehingga penulisan lewat jalur server yang memeriksa ulang aturan yang sama).
+ */
+async function cashEditor() {
+  const ctx = await requireModule("cashplan.view");
+  const isAdmin = ctx.user.roles.includes("admin");
+  if (!isAdmin && !ctx.user.permissions.has("cashplan.edit")) redirect("/dashboard?akses=ditolak");
+  return { ...ctx, isAdmin };
+}
 
 async function ctxVersion(fd: FormData, permission: string) {
   const { context } = await requireModule(permission);
@@ -27,13 +42,14 @@ export async function saveCashPlanAction(fd: FormData): Promise<void> {
   const versionId = await ctxVersion(fd, "cashplan.edit");
   const item = str(fd, "itemId", 40);
   if (!isUuid(item)) flashRedirect(BACK, { err: "Butir tidak valid." });
-  const months: number[] = [];
-  for (let m = 1; m <= 12; m++) {
-    const raw = String(fd.get(`m${m}`) ?? "").trim();
-    const v = raw === "" ? 0 : num(fd, `m${m}`);
-    if (!Number.isFinite(v) || v < 0) flashRedirect(BACK, { err: `Nilai bulan ke-${m} tidak valid.` });
-    months.push(v);
+  const quarters: number[] = [];
+  for (let q = 1; q <= 4; q++) {
+    const raw = String(fd.get(`q${q}`) ?? "").trim();
+    const v = raw === "" ? 0 : num(fd, `q${q}`);
+    if (!Number.isFinite(v) || v < 0) flashRedirect(BACK, { err: `Nilai triwulan ${q} tidak valid.` });
+    quarters.push(v);
   }
+  const months = quartersToMonths(quarters);
   const supabase = await userClient();
   return runAction(BACK, "Anggaran kas disimpan sebagai draf.", async () =>
     supabase.rpc("save_cash_plan", { p_version: versionId, p_item: item, p_months: months }),
@@ -73,12 +89,20 @@ const MONTH_KEYS = ["jan", "feb", "mar", "apr", "mei", "jun", "jul", "agu", "sep
  */
 export async function saveCashPlansBulkAction(fd: FormData): Promise<void> {
   const submit = str(fd, "intent", 10) === "submit";
-  const versionId = await ctxVersion(fd, "cashplan.edit");
+  const ed = await cashEditor();
+  if (str(fd, "versionId", 40) !== ed.context.versionId) flashRedirect(BACK, { err: "Konteks anggaran berubah. Muat ulang halaman lalu ulangi." });
+  const versionId = ed.context.versionId;
   if (submit) await requirePerm("cashplan.submit");
   const parsed = parseBulkPayload(String(fd.get(submit ? "payload_submit" : "payload_draft") ?? ""));
   if (!parsed.ok) flashRedirect(BACK, { err: parsed.error });
   const rows = (parsed as { ok: true; rows: ReturnType<typeof parseBulkPayload> extends infer R ? R extends { ok: true; rows: infer T } ? T : never : never }).rows;
 
+  if (ed.isAdmin) {
+    const res = await saveManyAsAdmin({ id: ed.user.id, organizationId: ed.user.organizationId }, versionId, rows.map((r) => ({ itemId: r.id, months: r.months, label: r.label })));
+    revalidatePath(BACK);
+    if (res.gagal.length) flashRedirect(BACK, { err: `${res.saved} butir disimpan sebagai draf untuk PPTK. ${res.gagal.length} butir gagal: ${res.gagal.slice(0, 4).join("; ")}${res.gagal.length > 4 ? " ..." : ""}` });
+    flashRedirect(BACK, { ok: `${res.saved} butir disimpan sebagai draf untuk PPTK masing-masing.` });
+  }
   const supabase = await userClient();
   let saved = 0, submitted = 0;
   const failed: string[] = [];
@@ -113,11 +137,12 @@ interface ItemRaw {
     description: string | null; pptk_id: string | null;
     sub_activities: { code: string; name: string } | null; expenditure_accounts: { code: string; name: string } | null;
     funding_sources: { code: string; name: string } | null;
+    pptk: { full_name: string } | null;
   } | null;
 }
 interface PlanRaw { budget_item_id: string; status: CashItemStatus; cash_budget_periods: { period_no: number; period_type: string; amount: string | number }[] }
 const monthsOf = (p?: PlanRaw) => Array.from({ length: 12 }, (_, i) => Number(p?.cash_budget_periods.find((x) => x.period_type === "month" && x.period_no === i + 1)?.amount ?? 0));
-const ITEM_SELECT = "budget_item_id, pagu, budget_items(description, pptk_id, sub_activities(code,name), expenditure_accounts(code,name), funding_sources(code,name))";
+const ITEM_SELECT = "budget_item_id, pagu, budget_items(description, pptk_id, sub_activities(code,name), expenditure_accounts(code,name), funding_sources(code,name), pptk:profiles!budget_items_pptk_id_fkey(full_name))";
 const PLAN_SELECT = "budget_item_id, status, cash_budget_periods(period_no, period_type, amount)";
 
 type Sb = Awaited<ReturnType<typeof userClient>>;
@@ -153,13 +178,14 @@ async function saveMany(supabase: Sb, versionId: string, rows: { itemId: string;
  * nilai dapat per bulan (jan–des) atau per triwulan (tw1–tw4, dibagi rata ke 3 bulan). intent=preview hanya memeriksa; intent=apply menyimpan sebagai DRAF.
  */
 export async function importCashAction(_prev: CashImportState, fd: FormData): Promise<CashImportState> {
-  const { user, context } = await requireModule("cashplan.edit");
+  const { user, context, isAdmin } = await cashEditor();
   if (str(fd, "versionId", 40) !== context.versionId) return { phase: "error", error: "Konteks anggaran berubah. Muat ulang halaman lalu ulangi." };
   const apply = str(fd, "intent", 10) === "apply";
   const file = fd.get("file");
-  if (!(file instanceof File) || file.size === 0) return { phase: "error", error: "Pilih berkas Excel (.xlsx) atau CSV." };
-  const read = await readTable(file);
+  if (!(file instanceof File) || file.size === 0) return { phase: "error", error: "Pilih berkas Excel (.xlsx), CSV, atau PDF." };
+  const read = await readCashTable(file);
   if (!read.ok) return { phase: "error", error: read.error };
+  const note = (read as { note?: string }).note;
   const table = (read as { rows: string[][] }).rows;
   const head = resolveCashHeaders(table[0] ?? []);
   if (head.problems.length) return { phase: "error", error: head.problems.join(" ") };
@@ -176,18 +202,18 @@ export async function importCashAction(_prev: CashImportState, fd: FormData): Pr
     return {
       itemId: r.budget_item_id, subCode: b.sub_activities?.code ?? "", accountCode: b.expenditure_accounts?.code ?? "",
       fundingCode: b.funding_sources?.code ?? "", fundingName: b.funding_sources?.name ?? "", desc: b.description ?? "",
-      pagu: Number(r.pagu), pptkId: b.pptk_id, status: plan?.status ?? "none", months: monthsOf(plan),
+      pagu: Number(r.pagu), pptkId: b.pptk_id, pptkName: b.pptk?.full_name, status: plan?.status ?? "none", months: monthsOf(plan),
     };
   });
 
-  const plan = planCashImport(table, head, cash, user.id);
+  const plan = planCashImport(table, head, cash, isAdmin ? "semua" : user.id);
   const SHOW = 300;
-  const view = { counts: plan.counts, rows: plan.rows.slice(0, SHOW), truncated: plan.rows.length > SHOW };
+  const view = { counts: plan.counts, rows: plan.rows.slice(0, SHOW), truncated: plan.rows.length > SHOW, note };
   if (plan.problems.length) return { phase: "error", ...view, error: `Impor dibatalkan, tidak ada data yang disimpan. ${plan.problems.length} baris bermasalah; perbaiki berkas lalu periksa ulang.` };
   if (!apply) return { phase: "preview", ...view };
 
   const todo = plan.rows.filter((r) => r.status === "simpan" && r.itemId && r.months).map((r) => ({ itemId: r.itemId!, months: r.months!, label: r.label }));
-  const res = await saveMany(supabase, context.versionId, todo);
+  const res = isAdmin ? await saveManyAsAdmin({ id: user.id, organizationId: user.organizationId }, context.versionId, todo) : await saveMany(supabase, context.versionId, todo);
   revalidatePath("/anggaran-kas");
   return { phase: "done", ...view, applied: res };
 }
@@ -197,13 +223,14 @@ export async function importCashAction(_prev: CashImportState, fd: FormData): Pr
  * ke versi yang dibuka, dikecilkan proporsional bila pagu baru lebih kecil. Hanya butir milik PPTK yang login; hasil berupa DRAF.
  */
 export async function adjustCashAction(_prev: CashAdjustState, fd: FormData): Promise<CashAdjustState> {
-  const { user, context } = await requireModule("cashplan.edit");
+  const { user, context, isAdmin } = await cashEditor();
   if (str(fd, "versionId", 40) !== context.versionId) return { phase: "error", error: "Konteks anggaran berubah. Muat ulang halaman lalu ulangi." };
   const source = str(fd, "sourceVersion", 40);
   if (!isUuid(source) || source === context.versionId) return { phase: "error", error: "Pilih tahapan sumber yang berbeda dari versi yang sedang dibuka." };
   const apply = str(fd, "intent", 10) === "apply";
   const overwrite = str(fd, "overwrite", 5) === "true";
-  const mode = str(fd, "mode", 10) === "salin" ? "salin" : "realisasi";
+  const modeRaw = str(fd, "mode", 10);
+  const mode = modeRaw === "salin" ? "salin" : modeRaw === "realisasi" ? "realisasi" : "tahapan";
 
   const supabase = await userClient();
   const { data: vs } = await supabase.from("budget_versions").select("id, fiscal_year_id, stage_code, version_no, dpa_date").in("id", [source, context.versionId]);
@@ -217,13 +244,17 @@ export async function adjustCashAction(_prev: CashAdjustState, fd: FormData): Pr
   const planNow = new Map(now.plans.rows.map((p) => [p.budget_item_id, p]));
   const targets: AdjustTarget[] = now.items.rows.filter((r) => r.budget_items).map((r) => {
     const b = r.budget_items!, plan = planNow.get(r.budget_item_id);
-    return { itemId: r.budget_item_id, label: `${b.sub_activities?.code ?? ""} ${b.expenditure_accounts?.code ?? ""}`.trim(), pagu: Number(r.pagu), mine: b.pptk_id === user.id, status: plan?.status ?? "none", months: monthsOf(plan) };
+    return { itemId: r.budget_item_id, label: `${b.sub_activities?.code ?? ""} ${b.expenditure_accounts?.code ?? ""}`.trim(), subCode: b.sub_activities?.code ?? "", pagu: Number(r.pagu), mine: isAdmin ? !!b.pptk_id : b.pptk_id === user.id, status: plan?.status ?? "none", months: monthsOf(plan) };
   });
   const planBefore = new Map(before.plans.rows.map((p) => [p.budget_item_id, p]));
-  const srcMap = new Map<string, AdjustSource>(before.items.rows.map((r) => [r.budget_item_id, { pagu: Number(r.pagu), months: planBefore.has(r.budget_item_id) ? monthsOf(planBefore.get(r.budget_item_id)) : null }]));
+  const srcMap = new Map<string, AdjustSource>(before.items.rows.map((r) => [r.budget_item_id, { pagu: Number(r.pagu), subCode: r.budget_items?.sub_activities?.code ?? "", months: planBefore.has(r.budget_item_id) ? monthsOf(planBefore.get(r.budget_item_id)) : null }]));
 
   let out: ReturnType<typeof planCashAdjust>;
-  if (mode === "realisasi") {
+  if (mode === "tahapan") {
+    const stage = cur.stage_code as StageCode;
+    if (stage === "murni") return { phase: "error", error: "Penyesuaian menurut tahapan berlaku untuk Pergeseran atau Perubahan. Buka tahapan tersebut (versi yang dibuka bukan Murni)." };
+    out = planCashByStage(stage, targets, srcMap, (cur as { dpa_date?: string | null }).dpa_date ?? null, overwrite);
+  } else if (mode === "realisasi") {
     const dpa = (cur as { dpa_date?: string | null }).dpa_date;
     if (!dpa) return { phase: "error", error: "Tanggal DPA versi yang dibuka belum diisi. Isi di Input Anggaran (bagian Versi anggaran), atau pilih mode “Salin kas tahapan sebelumnya”." };
     const ids = targets.filter((t) => t.mine).map((t) => t.itemId);
@@ -248,11 +279,11 @@ export async function adjustCashAction(_prev: CashAdjustState, fd: FormData): Pr
     out = planCashAdjust(targets, srcMap, overwrite);
   }
   const SHOW = 300;
-  const view = { source: `${(src.stage_code as string)} v${src.version_no}`, counts: out.counts, rows: out.rows.slice(0, SHOW), others: out.others, truncated: out.rows.length > SHOW };
+  const view = { source: `${(src.stage_code as string)} v${src.version_no}`, counts: out.counts, rows: out.rows.slice(0, SHOW), others: out.others, warnings: out.warnings, truncated: out.rows.length > SHOW };
   if (!apply) return { phase: "preview", ...view };
 
-  const todo = out.rows.filter((r) => (r.status === "salin" || r.status === "kurangi" || r.status === "realisasi") && r.months).map((r) => ({ itemId: r.itemId, months: r.months!, label: r.label }));
-  const res = await saveMany(supabase, context.versionId, todo);
+  const todo = out.rows.filter((r) => (r.status === "salin" || r.status === "kurangi" || r.status === "tambah" || r.status === "baru" || r.status === "realisasi") && r.months).map((r) => ({ itemId: r.itemId, months: r.months!, label: r.label }));
+  const res = isAdmin ? await saveManyAsAdmin({ id: user.id, organizationId: user.organizationId }, context.versionId, todo) : await saveMany(supabase, context.versionId, todo);
   revalidatePath("/anggaran-kas");
   return { phase: "done", ...view, applied: res };
 }

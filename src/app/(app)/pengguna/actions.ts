@@ -2,7 +2,8 @@
 
 import { requireModule } from "@/lib/auth/guard";
 import { adminClient } from "@/lib/supabase/admin";
-import { createAccount, diagnoseAccountSetup } from "@/lib/account-admin";
+import { createAccount, diagnoseAccountSetup, tempPassword } from "@/lib/account-admin";
+import { storeTempPassword } from "@/lib/auth/temp-credential";
 import { userClient } from "@/lib/supabase/server";
 import { flashRedirect } from "@/lib/flash";
 import { passwordSchema } from "@/lib/auth/password-policy";
@@ -63,15 +64,18 @@ export async function resetPasswordAction(fd: FormData): Promise<void> {
   if (id === user.id) flashRedirect(BACK, { err: "Ganti kata sandi sendiri melalui menu profil." });
   const target = await targetInOrg(id, user.organizationId);
   if (!target) flashRedirect(BACK, { err: "Pengguna tidak ditemukan." });
-  const pw = passwordSchema.safeParse(String(fd.get("password") ?? ""));
+  // Kosong = dibuat acak otomatis (reset cepat). Kata sandi sementara dapat dilihat di kolom "Kata sandi sementara" sampai pengguna menggantinya.
+  const given = String(fd.get("password") ?? "").trim();
+  const pw = passwordSchema.safeParse(given || tempPassword());
   if (!pw.success) flashRedirect(BACK, { err: `Kata sandi sementara: ${pw.error.issues[0]?.message}` });
   const admin = adminClient();
   const upd = await admin.auth.admin.updateUserById(id, { password: pw.data });
   if (upd.error) { console.error("[pengguna] reset", upd.error.message); flashRedirect(BACK, { err: "Kata sandi tidak dapat diatur ulang." }); }
-  await admin.from("profiles").update({ must_change_password: true }).eq("id", id);
+  await admin.from("profiles").update({ must_change_password: true, status: "active" }).eq("id", id);
   await admin.auth.admin.signOut(id, "global").catch(() => undefined);
+  await storeTempPassword(id, pw.data, user.id);
   await audit(user.id, user.organizationId, "USER_PASSWORD_RESET", id);
-  flashRedirect(BACK, { ok: `Kata sandi @${target!.username} diatur ulang; wajib diganti saat masuk.` });
+  flashRedirect(BACK, { ok: `Kata sandi @${target!.username} diatur ulang. Lihat kata sandi sementaranya di kolom “Kata sandi sementara”; pengguna wajib menggantinya saat masuk.` });
 }
 
 export async function setRolesAction(fd: FormData): Promise<void> {
