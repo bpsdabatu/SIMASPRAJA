@@ -4,6 +4,7 @@ import { requireModule } from "@/lib/auth/guard";
 import { adminClient } from "@/lib/supabase/admin";
 import { createAccount, diagnoseAccountSetup, tempPassword } from "@/lib/account-admin";
 import { storeTempPassword } from "@/lib/auth/temp-credential";
+import { recordAccountEvent } from "@/lib/account-history";
 import { userClient } from "@/lib/supabase/server";
 import { flashRedirect } from "@/lib/flash";
 import { passwordSchema } from "@/lib/auth/password-policy";
@@ -55,6 +56,7 @@ export async function setUserStatusAction(fd: FormData): Promise<void> {
   if (error) flashRedirect(BACK, { err: "Status tidak dapat diubah." });
   if (to === "suspended") await adminClient().auth.admin.signOut(id, "global").catch(() => undefined);
   await audit(user.id, user.organizationId, to === "active" ? "USER_ACTIVATED" : "USER_SUSPENDED", id);
+  await recordAccountEvent({ profileId: id, username: target!.username, event: to === "active" ? "DIAKTIFKAN" : "DITANGGUHKAN", actorId: user.id, actorUsername: user.username, organizationId: user.organizationId });
   flashRedirect(BACK, { ok: to === "active" ? `@${target!.username} diaktifkan.` : `@${target!.username} ditangguhkan dan sesinya diakhiri.` });
 }
 
@@ -75,6 +77,7 @@ export async function resetPasswordAction(fd: FormData): Promise<void> {
   await admin.auth.admin.signOut(id, "global").catch(() => undefined);
   await storeTempPassword(id, pw.data, user.id);
   await audit(user.id, user.organizationId, "USER_PASSWORD_RESET", id);
+  await recordAccountEvent({ profileId: id, username: target!.username, event: "SANDI_DIRESET", actorId: user.id, actorUsername: user.username, organizationId: user.organizationId });
   flashRedirect(BACK, { ok: `Kata sandi @${target!.username} diatur ulang. Lihat kata sandi sementaranya di kolom “Kata sandi sementara”; pengguna wajib menggantinya saat masuk.` });
 }
 
@@ -104,5 +107,7 @@ export async function setRolesAction(fd: FormData): Promise<void> {
   } else {
     await sb.from("user_scopes").delete().eq("user_id", id).eq("scope_type", "organization");
   }
+  const who = await targetInOrg(id, user.organizationId);
+  if (who) await recordAccountEvent({ profileId: id, username: who.username, event: "PERAN_DIUBAH", actorId: user.id, actorUsername: user.username, organizationId: user.organizationId, detail: { peran: roles } });
   flashRedirect(BACK, { ok: "Peran diperbarui." });
 }

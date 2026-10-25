@@ -120,7 +120,7 @@ export function CashAdjustPanel({ versionId, sources, defaultSource, admin = fal
   };
   const n = (state.counts?.salin ?? 0) + (state.counts?.kurangi ?? 0) + (state.counts?.tambah ?? 0) + (state.counts?.baru ?? 0) + (state.counts?.realisasi ?? 0);
   const canApply = state.phase === "preview" && n > 0;
-  if (sources.length === 0) return <p className="border-t border-slate-100 p-5 text-sm text-slate-600">Belum ada tahapan lain pada tahun anggaran ini sebagai sumber salinan. Buat versi Pergeseran/Perubahan di Input Anggaran terlebih dahulu.</p>;
+  const [mode, setMode] = useState<string>(sources.length === 0 ? "pagu" : "tahapan");
   return (
     <div className="space-y-4 border-t border-slate-100 p-5">
       <p className="text-sm text-slate-600">
@@ -129,14 +129,17 @@ export function CashAdjustPanel({ versionId, sources, defaultSource, admin = fal
       </p>
       <form ref={ref} onSubmit={(e) => { e.preventDefault(); run("preview"); }} className="grid gap-3 sm:grid-cols-2">
         <input type="hidden" name="versionId" value={versionId} />
-        <Field label="Salin dari tahapan" htmlFor="adj-src">
-          <Select id="adj-src" name="sourceVersion" defaultValue={defaultSource}>{sources.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</Select>
-        </Field>
+        {mode !== "pagu" && (
+          <Field label="Salin dari tahapan" htmlFor="adj-src">
+            <Select id="adj-src" name="sourceVersion" defaultValue={defaultSource}>{sources.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</Select>
+          </Field>
+        )}
         <Field label="Cara menyesuaikan" htmlFor="adj-mode" className="sm:col-span-2" hint="Mode tahapan memakai tanggal DPA versi yang dibuka: perubahan kas ditempatkan pada triwulan DPA s.d. TW IV. Mode realisasi mengunci bulan sebelum bulan DPA ke realisasi nyata.">
-          <Select id="adj-mode" name="mode" defaultValue="tahapan">
-            <option value="tahapan">Sesuai tahapan: pagu tetap = kas tetap, pagu berubah = kas disesuaikan (disarankan)</option>
-            <option value="realisasi">Sesuaikan dengan realisasi</option>
-            <option value="salin">Salin kas tahapan sebelumnya, kecilkan bila pagu turun</option>
+          <Select id="adj-mode" name="mode" value={mode} onChange={(e) => { setMode(e.target.value); }}>
+            <option value="pagu">Susun dari pagu Input Anggaran: bagi rata per triwulan (tanpa tahapan sumber; cocok untuk Murni)</option>
+            {sources.length > 0 && <option value="tahapan">Sesuai tahapan: pagu tetap = kas tetap, pagu berubah = kas disesuaikan (disarankan)</option>}
+            {sources.length > 0 && <option value="realisasi">Sesuaikan dengan realisasi</option>}
+            {sources.length > 0 && <option value="salin">Salin kas tahapan sebelumnya, kecilkan bila pagu turun</option>}
           </Select>
         </Field>
         <label className="flex items-end gap-2 pb-2 text-sm text-slate-700"><input type="checkbox" name="overwrite" value="true" className="h-4 w-4 rounded border-slate-300" /> Timpa isian yang sudah ada (draf/dikembalikan)</label>

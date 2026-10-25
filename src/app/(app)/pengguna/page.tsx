@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Download, Plus, ShieldCheck } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { loadTempPasswords } from "@/lib/auth/temp-credential";
+import { EVENT_LABEL, loadAccountHistory, loadAccountSummaries } from "@/lib/account-history";
 import { requireModule } from "@/lib/auth/guard";
 import { userClient } from "@/lib/supabase/server";
 import { ROLE_LABEL } from "@/lib/nav";
@@ -33,13 +34,17 @@ function RoleChecks({ current = [] }: { current?: string[] }) {
 
 interface Row { id: string; username: string; full_name: string; nip: string | null; position_title: string | null; status: keyof typeof STATUS; last_login_at: string | null; must_change_password: boolean; user_roles: { role_code: string }[] }
 
-export default async function PenggunaPage({ searchParams }: { searchParams: Promise<{ ok?: string; err?: string }> }) {
+export default async function PenggunaPage({ searchParams }: { searchParams: Promise<{ ok?: string; err?: string; u?: string }> }) {
   const { user } = await requireModule("users.manage");
   const sp = await searchParams;
   const sb = await userClient();
   const { data, error } = await sb.from("profiles").select("id, username, full_name, nip, position_title, status, last_login_at, must_change_password, user_roles(role_code)").order("full_name").limit(1000);
   const rows = (data ?? []) as unknown as Row[];
-  const temp = await loadTempPasswords(rows.filter((r) => r.must_change_password).map((r) => r.id));
+  const [temp, sums, hist] = await Promise.all([
+    loadTempPasswords(rows.filter((r) => r.must_change_password).map((r) => r.id)),
+    loadAccountSummaries(user.organizationId),
+    loadAccountHistory(user.organizationId, { username: /^[a-z0-9._-]{3,32}$/.test(sp.u ?? "") ? sp.u : undefined, limit: 100 }),
+  ]);
 
   return (
     <div className="mx-auto max-w-7xl space-y-6">
@@ -75,7 +80,7 @@ export default async function PenggunaPage({ searchParams }: { searchParams: Pro
         {error ? <EmptyState title="Data tidak dapat dimuat">Muat ulang halaman.</EmptyState> : rows.length === 0 ? <EmptyState title="Belum ada pengguna" /> : (
           <TableWrap>
             <table className="table-base">
-              <thead><tr><th>Pengguna</th><th>Username</th><th>Peran</th><th>Status</th><th>Kata sandi sementara</th><th>Terakhir masuk</th><th className="text-right">Aksi</th></tr></thead>
+              <thead><tr><th>Pengguna</th><th>Username</th><th>Peran</th><th>Status</th><th>Kata sandi sementara</th><th>Dibuat</th><th>Reset terakhir</th><th>Terakhir masuk</th><th className="text-right">Aksi</th></tr></thead>
               <tbody>
                 {rows.map((r) => {
                   const roles = r.user_roles.map((x) => x.role_code);
@@ -88,6 +93,8 @@ export default async function PenggunaPage({ searchParams }: { searchParams: Pro
                       <td><div className="flex flex-wrap gap-1">{roles.map((x) => <Badge key={x} tone="navy">{ROLE_LABEL[x] ?? x}</Badge>)}{roles.length === 0 && <span className="text-slate-400">—</span>}</div></td>
                       <td><Badge tone={tone}>{label}</Badge></td>
                       <td className="text-[13px]">{temp.map.get(r.id) ? <SecretCell value={temp.map.get(r.id)!} /> : r.must_change_password ? <span className="text-amber-700">Belum diganti (klik Reset untuk membuat yang baru)</span> : <span className="text-slate-400">Sudah diganti pengguna</span>}</td>
+                      <td className="whitespace-nowrap text-[13px] text-slate-600">{sums.map.get(r.id)?.createdAt ? <>{formatDateTimeWIB(sums.map.get(r.id)!.createdAt!)}<span className="block text-xs text-slate-400">{sums.map.get(r.id)!.createdBy ? `oleh @${sums.map.get(r.id)!.createdBy}` : ""}</span></> : <span className="text-slate-400">—</span>}</td>
+                      <td className="whitespace-nowrap text-[13px] text-slate-600">{sums.map.get(r.id)?.lastResetAt ? <>{formatDateTimeWIB(sums.map.get(r.id)!.lastResetAt!)}<span className="block text-xs text-slate-400">{sums.map.get(r.id)!.lastResetBy ? `oleh @${sums.map.get(r.id)!.lastResetBy}` : ""} · {sums.map.get(r.id)!.resets}×</span></> : <span className="text-slate-400">Belum pernah</span>}</td>
                       <td className="whitespace-nowrap text-[13px] text-slate-600">{r.last_login_at ? formatDateTimeWIB(r.last_login_at) : "Belum pernah"}</td>
                       <td className="text-right">
                         {self ? <span className="text-xs text-slate-400">—</span> : (
@@ -117,6 +124,27 @@ export default async function PenggunaPage({ searchParams }: { searchParams: Pro
                     </tr>
                   );
                 })}
+              </tbody>
+            </table>
+          </TableWrap>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader title={sp.u ? `Riwayat akun @${sp.u}` : "Riwayat akun"} description="Catatan permanen (tidak dapat diubah) kapan akun dibuat, kata sandi diatur ulang/diganti, status dan peran berubah, beserta pelakunya. Kata sandi tidak pernah dicatat di sini." actions={sp.u ? <a href="/pengguna" className={buttonVariants({ variant: "outline", size: "sm" })}>Semua akun</a> : undefined} />
+        {!hist.ready ? <EmptyState title="Riwayat akun belum aktif">Jalankan migrasi <code>0017_riwayat_akun.sql</code> di Supabase, lalu muat ulang.</EmptyState> : hist.rows.length === 0 ? <EmptyState title="Belum ada riwayat" /> : (
+          <TableWrap>
+            <table className="table-base">
+              <thead><tr><th>Waktu (WIB)</th><th>Akun</th><th>Kejadian</th><th>Oleh</th></tr></thead>
+              <tbody>
+                {hist.rows.map((h) => (
+                  <tr key={h.id}>
+                    <td className="whitespace-nowrap text-[13px]">{formatDateTimeWIB(h.occurred_at)}</td>
+                    <td><a href={`/pengguna?u=${h.username}`} className="font-mono text-[13px] text-navy-700 underline-offset-2 hover:underline">@{h.username}</a>{h.full_name ? <span className="block text-xs text-slate-500">{h.full_name}</span> : null}</td>
+                    <td>{EVENT_LABEL[h.event] ?? h.event}</td>
+                    <td className="text-[13px] text-slate-600">{h.actor_username ? `@${h.actor_username}` : <span className="text-slate-400">—</span>}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </TableWrap>

@@ -225,20 +225,22 @@ export async function importCashAction(_prev: CashImportState, fd: FormData): Pr
 export async function adjustCashAction(_prev: CashAdjustState, fd: FormData): Promise<CashAdjustState> {
   const { user, context, isAdmin } = await cashEditor();
   if (str(fd, "versionId", 40) !== context.versionId) return { phase: "error", error: "Konteks anggaran berubah. Muat ulang halaman lalu ulangi." };
-  const source = str(fd, "sourceVersion", 40);
-  if (!isUuid(source) || source === context.versionId) return { phase: "error", error: "Pilih tahapan sumber yang berbeda dari versi yang sedang dibuka." };
   const apply = str(fd, "intent", 10) === "apply";
   const overwrite = str(fd, "overwrite", 5) === "true";
   const modeRaw = str(fd, "mode", 10);
-  const mode = modeRaw === "salin" ? "salin" : modeRaw === "realisasi" ? "realisasi" : "tahapan";
+  const mode = modeRaw === "salin" ? "salin" : modeRaw === "realisasi" ? "realisasi" : modeRaw === "pagu" ? "pagu" : "tahapan";
+  const source = str(fd, "sourceVersion", 40);
+  if (mode !== "pagu" && (!isUuid(source) || source === context.versionId)) return { phase: "error", error: "Pilih tahapan sumber yang berbeda dari versi yang sedang dibuka." };
 
   const supabase = await userClient();
-  const { data: vs } = await supabase.from("budget_versions").select("id, fiscal_year_id, stage_code, version_no, dpa_date").in("id", [source, context.versionId]);
-  const src = (vs ?? []).find((v) => v.id === source), cur = (vs ?? []).find((v) => v.id === context.versionId);
+  const { data: vs } = await supabase.from("budget_versions").select("id, fiscal_year_id, stage_code, version_no, dpa_date").in("id", mode === "pagu" ? [context.versionId] : [source, context.versionId]);
+  const cur = (vs ?? []).find((v) => v.id === context.versionId);
+  const src = mode === "pagu" ? cur : (vs ?? []).find((v) => v.id === source);
   if (!src || !cur) return { phase: "error", error: "Versi anggaran tidak ditemukan." };
   if (src.fiscal_year_id !== cur.fiscal_year_id) return { phase: "error", error: "Tahapan sumber harus berasal dari tahun anggaran yang sama." };
 
-  const [now, before] = await Promise.all([loadItemsAndPlans(supabase, context.versionId), loadItemsAndPlans(supabase, source)]);
+  const emptyLoad = { items: { rows: [], error: null }, plans: { rows: [], error: null } } as unknown as Awaited<ReturnType<typeof loadItemsAndPlans>>;
+  const [now, before] = await Promise.all([loadItemsAndPlans(supabase, context.versionId), mode === "pagu" ? Promise.resolve(emptyLoad) : loadItemsAndPlans(supabase, source)]);
   if (now.items.error || now.plans.error || before.items.error || before.plans.error) return { phase: "error", error: "Data anggaran tidak dapat dimuat. Coba lagi." };
 
   const planNow = new Map(now.plans.rows.map((p) => [p.budget_item_id, p]));
@@ -250,7 +252,12 @@ export async function adjustCashAction(_prev: CashAdjustState, fd: FormData): Pr
   const srcMap = new Map<string, AdjustSource>(before.items.rows.map((r) => [r.budget_item_id, { pagu: Number(r.pagu), subCode: r.budget_items?.sub_activities?.code ?? "", months: planBefore.has(r.budget_item_id) ? monthsOf(planBefore.get(r.budget_item_id)) : null }]));
 
   let out: ReturnType<typeof planCashAdjust>;
-  if (mode === "tahapan") {
+  if (mode === "pagu") {
+    // Susun langsung dari pagu Input Anggaran (tanpa tahapan sumber): setiap butir ber-PPTK tanpa kas dibagi rata pada TW DPA s.d. TW IV (Murni: TW I–IV).
+    const stage = cur.stage_code as StageCode;
+    out = planCashByStage(stage, targets, new Map(), (cur as { dpa_date?: string | null }).dpa_date ?? null, overwrite);
+    if (stage === "murni") out.warnings = (out.warnings ?? []).filter((w) => !w.startsWith("Tanggal DPA"));
+  } else if (mode === "tahapan") {
     const stage = cur.stage_code as StageCode;
     if (stage === "murni") return { phase: "error", error: "Penyesuaian menurut tahapan berlaku untuk Pergeseran atau Perubahan. Buka tahapan tersebut (versi yang dibuka bukan Murni)." };
     out = planCashByStage(stage, targets, srcMap, (cur as { dpa_date?: string | null }).dpa_date ?? null, overwrite);

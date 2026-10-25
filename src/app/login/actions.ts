@@ -42,7 +42,8 @@ export async function loginAction(_prev: FormState, formData: FormData): Promise
     if (!result.ok) {
       return { error: result.message, captcha: result.refreshCaptcha ? await newCaptcha() : undefined };
     }
-    await setContextCookie(result.userId, result.context);
+    if (result.context) await setContextCookie(result.userId, result.context);
+    else destination = "/pilih-konteks?info=konteks"; // tahun/tahapan pilihan belum ada: pilih yang tersedia atau (admin) buat baru
     if (result.mustChangePassword) destination = "/ganti-password";
   } catch (err) {
     // Jangan bocorkan detail internal; catat di log server saja.
