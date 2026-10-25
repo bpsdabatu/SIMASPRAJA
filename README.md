@@ -39,6 +39,7 @@ Agar konteks anggaran tersedia, butuh minimal satu `budget_versions` berstatus `
 | `npm run test:e2e` | E2E asap Playwright (`PW_CHROMIUM_PATH` bila Chromium tidak diunduh) |
 | `npm run build` | Build produksi |
 | `npm run user:create` | Membuat akun (service role; dijalankan administrator) |
+| `npm run user:reset -- --username admin` | Pemulihan akun: atur ulang kata sandi (acak/`NEW_PASSWORD`), aktifkan akun, buka blokir login; `--diagnose` hanya memeriksa penyebab |
 
 ## Struktur
 ```
@@ -58,3 +59,11 @@ Lihat `.env.example`. **Publik:** `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPAB
 - [Arsitektur & rencana](docs/architecture.md) · [Matriks izin](docs/permission-matrix.md)
 - [Database & definisi finansial](docs/database.md) · [Deployment & rollback](docs/deployment.md)
 - [Checklist keamanan](docs/security-checklist.md) · [Panduan pengguna](docs/panduan-pengguna.md)
+
+
+## Pembaruan: Anggaran Kas triwulanan, unggah ADMIN, rekap akun (migrasi 0016)
+- **Anggaran Kas per TRIWULAN** untuk semua akun (tabel TW I–IV, templat, ekspor, cetak). Penyimpanan tetap 12 periode (tiap TW dibagi 3) sehingga data lama, LRA, dasbor, dan laporan triwulan tidak berubah.
+- **ADMIN dapat mengunggah Excel/CSV/PDF berteks** di menu Anggaran Kas; tiap baris didistribusikan sebagai draf ke PPTK penanggung jawab butir (kode sub kegiatan + rekening, opsional sumber dana/uraian/pptk; kode program/kegiatan dan pagu bila ada ikut divalidasi).
+- **Penyesuaian menurut tahapan**: Perubahan = pagu tetap → kas tetap, pagu berubah → kas disesuaikan; Pergeseran = pagu berpindah antar-rekening dalam sub kegiatan yang sama (peringatan bila total pagu sub kegiatan berubah), boleh berkali-kali (pilih versi pergeseran sebelumnya sebagai sumber).
+- **Menu Pengguna**: rekap akun + kata sandi sementara (terenkripsi AES-GCM di `account_temp_credentials`, hanya service role; terhapus saat pengguna mengganti sandi), reset cepat acak, unduh rekap Excel/CSV. Kata sandi pilihan pengguna tidak dapat dilihat (hanya hash di Supabase Auth).
+- Jalankan `supabase/migrations/0016_kata_sandi_sementara_dan_kas_triwulan.sql` (hanya menambah tabel). Dependensi baru: `unpdf@1.8.1`.
