@@ -5,6 +5,7 @@ import { adminClient } from "@/lib/supabase/admin";
 import { SERVICE_KEY_VAR } from "@/lib/env";
 import { USERNAME_RE } from "@/lib/auth/login-core";
 import { passwordSchema } from "@/lib/auth/password-policy";
+import { storeTempPassword } from "@/lib/auth/temp-credential";
 
 /**
  * Pembuatan akun (Pengguna & Peran dan Data Master › PPTK memakai SATU jalur ini).
@@ -122,6 +123,7 @@ export async function createAccount(actor: Actor, a: NewAccount): Promise<Create
   }
   if (failure) return { ok: false, error: `Akun dibatalkan. ${failure}` };
 
+  await storeTempPassword(uid, a.password, actor.id); // terenkripsi; dilihat admin di menu Pengguna sampai pengguna menggantinya
   await admin.from("audit_logs").insert({ action: "USER_CREATED", actor_id: actor.id, organization_id: actor.organizationId, table_name: "profiles", record_id: uid, context: { username, roles: a.roles } });
   return { ok: true, id: uid };
 }

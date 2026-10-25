@@ -91,3 +91,21 @@ export function parseLoose(raw: string): number {
 }
 
 /** Status baris anggaran kas pada tabel ringkas: kosong/sebagian/penuh/lebih terhadap pagu. */
+
+/** Nilai 4 triwulan -> 12 bulan (tiap triwulan dibagi 3; sisa sen pada bulan ketiga) agar penyimpanan 12 periode yang ada tetap dipakai. */
+export function quartersToMonths(q: number[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    const c = Math.max(0, cents(Number.isFinite(q[i]) ? (q[i] as number) : 0));
+    const b = Math.floor(c / 3);
+    out.push(fromCents(b), fromCents(b), fromCents(c - 2 * b));
+  }
+  return out;
+}
+
+/** Bagi rata total ke 4 triwulan; sisa sen pada TW IV. */
+export function spreadQuarters(total: number): number[] {
+  const c = Math.max(0, cents(total));
+  const per = Math.floor(c / 4);
+  return [per, per, per, c - per * 3].map(fromCents);
+}

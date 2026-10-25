@@ -1,4 +1,4 @@
-import { cents, fromCents, sumMonths } from "@/lib/cash-core";
+import { cents, fromCents, quarterSums, sumMonths } from "@/lib/cash-core";
 import { parseMoney } from "@/lib/csv";
 import { normHeader } from "@/lib/header";
 import { normName } from "@/lib/budget-import-core";
@@ -11,7 +11,7 @@ import { normName } from "@/lib/budget-import-core";
 export type CashItemStatus = "none" | "draft" | "submitted" | "returned" | "final";
 export interface CashItem {
   itemId: string; subCode: string; accountCode: string; fundingCode: string; fundingName: string; desc: string;
-  pagu: number; pptkId: string | null; status: CashItemStatus; months: number[];
+  pagu: number; pptkId: string | null; pptkName?: string; status: CashItemStatus; months: number[];
 }
 
 /* ------------------------------------------------------------------ header ------------------------------------------------------------------ */
@@ -27,6 +27,7 @@ const TW_ALIASES: string[][] = [
 
 export interface CashHeader {
   id?: number; sub?: number; account?: number; funding?: number; desc?: number;
+  program?: number; kegiatan?: number; pptk?: number; pagu?: number;
   months?: number[]; quarters?: number[]; problems: string[];
 }
 
@@ -36,6 +37,7 @@ export function resolveCashHeaders(headerRow: string[]): CashHeader {
   const out: CashHeader = {
     id: find(["id_butir"]), sub: find(["kode_sub_kegiatan"]), account: find(["kode_rekening", "kode_belanja"]),
     funding: find(["sumber_dana", "kode_sumber_dana", "nama_sumber_dana"]), desc: find(["uraian"]), problems: [],
+    program: find(["kode_program"]), kegiatan: find(["kode_kegiatan"]), pptk: find(["pptk", "nama_pptk"]), pagu: find(["pagu"]),
   };
   const m = MONTH_ALIASES.map(find), q = TW_ALIASES.map(find);
   if (m.every((x) => x !== undefined)) out.months = m as number[];
@@ -89,7 +91,13 @@ export interface CashPlanOutcome { rows: CashPlannedRow[]; problems: string[]; c
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export function planCashImport(table: string[][], head: CashHeader, items: CashItem[], userId: string): CashPlanOutcome {
+/**
+ * scope: id PPTK (hanya butir penugasannya) atau "semua" (ADMIN mendistribusikan ke seluruh PPTK; butir wajib sudah punya PPTK).
+ * Nilai selalu dinormalkan ke TRIWULAN (bila berkas berisi bulan, dijumlahkan per triwulan) lalu disimpan sebagai 12 periode (tiap TW dibagi 3).
+ */
+export function planCashImport(table: string[][], head: CashHeader, items: CashItem[], scope: string): CashPlanOutcome {
+  const userId = scope;
+  const all = scope === "semua";
   const byId = new Map(items.map((i) => [i.itemId.toLowerCase(), i]));
   const byCodes = new Map<string, CashItem[]>();
   for (const it of items) {
@@ -131,12 +139,25 @@ export function planCashImport(table: string[][], head: CashHeader, items: CashI
         const d = cand.filter((c) => normName(c.desc) === normName(dv));
         if (d.length) cand = d;
       }
-      if (cand.length > 1) {
+      const pv = cell(r, head.pptk);
+      if (pv && cand.length > 1) {
+        const p = cand.filter((c) => c.pptkName && normName(c.pptkName) === normName(pv));
+        if (p.length) cand = p;
+      }
+      if (cand.length > 1 && !all) {
         const mine = cand.filter((c) => c.pptkId === userId);
         if (mine.length) cand = mine;
       }
       if (cand.length > 1) return fail(line, label, "butir ambigu (ada lebih dari satu dengan sub kegiatan + rekening yang sama); tambahkan kolom sumber_dana dan/atau uraian, atau pakai id_butir");
       item = cand[0]!;
+    }
+    const kv = cell(r, head.kegiatan), pgv = cell(r, head.program);
+    if (kv && !item.subCode.toLowerCase().startsWith(kv.toLowerCase())) return fail(line, label, `kode kegiatan "${kv}" tidak sesuai dengan sub kegiatan ${item.subCode}`);
+    if (pgv && !item.subCode.toLowerCase().startsWith(pgv.toLowerCase())) return fail(line, label, `kode program "${pgv}" tidak sesuai dengan sub kegiatan ${item.subCode}`);
+    const paguRaw = cell(r, head.pagu);
+    if (paguRaw) {
+      const pg = parseMoney(paguRaw);
+      if (Number.isFinite(pg) && cents(pg) !== cents(item.pagu)) return fail(line, label, `pagu pada berkas (${pg.toLocaleString("id-ID")}) berbeda dengan pagu Input Anggaran tahapan yang dibuka (${item.pagu.toLocaleString("id-ID")}); pastikan berkas disusun untuk tahapan ini`);
     }
     if (seen.has(item.itemId)) return fail(line, label, `butir ganda dengan baris ${seen.get(item.itemId)}`);
     seen.set(item.itemId, line);
@@ -166,15 +187,18 @@ export function planCashImport(table: string[][], head: CashHeader, items: CashI
       if (!q) return fail(line, label, "ada nilai triwulan yang tidak valid (angka nol atau lebih, maksimal 2 desimal)");
       months = quarterToMonths(q);
     }
+    months = quarterToMonths(quarterSums(months)); // anggaran kas disusun per TRIWULAN
     const total = sumMonths(months);
     const base = { line, label: `${item.subCode} ${item.accountCode}`.trim(), itemId: item.itemId, months, total, pagu: item.pagu };
 
     // 3) aturan
-    if (item.pptkId !== userId) return fail(line, label, "bukan butir penugasan Anda (hanya PPTK penanggung jawab yang dapat mengisi kas)");
+    if (all) { if (!item.pptkId) return fail(line, label, "butir belum memiliki PPTK; tetapkan PPTK di Input Anggaran agar kas dapat didistribusikan"); }
+    else if (item.pptkId !== userId) return fail(line, label, "bukan butir penugasan Anda (hanya PPTK penanggung jawab yang dapat mengisi kas)");
     if (cents(total) > cents(item.pagu)) return fail(line, label, `total kas ${total.toLocaleString("id-ID")} melebihi pagu ${item.pagu.toLocaleString("id-ID")}`);
     if (item.status === "submitted" || item.status === "final") { rows.push({ ...base, status: "dikunci", message: `Berstatus ${item.status === "final" ? "final" : "diajukan"}; tidak diubah` }); return; }
     if (cents(total) === 0) { rows.push({ ...base, status: "kosong", message: "Semua nilai 0; dilewati" }); return; }
-    const same = months.every((v, i) => cents(v) === cents(item!.months[i] ?? 0));
+    const qa = quarterSums(months), qb = quarterSums(item.months);
+    const same = qa.every((v, i) => cents(v) === cents(qb[i] ?? 0));
     if (same) { rows.push({ ...base, status: "sama", message: "Sama dengan isian saat ini" }); return; }
     rows.push({ ...base, status: "simpan", message: cents(total) < cents(item.pagu) ? `Sisa belum dialokasikan ${(fromCents(cents(item.pagu) - cents(total))).toLocaleString("id-ID")}` : "Pas sesuai pagu" });
   });
@@ -186,14 +210,15 @@ export function planCashImport(table: string[][], head: CashHeader, items: CashI
 
 /* ------------------------------------------------------------------ penyesuaian antartahapan ------------------------------------------------------------------ */
 
-export type AdjustStatus = "salin" | "kurangi" | "realisasi" | "melebihi" | "terisi" | "dikunci" | "tanpa_sumber";
-export interface AdjustTarget { itemId: string; label: string; pagu: number; mine: boolean; status: CashItemStatus; months: number[] }
-export interface AdjustSource { pagu: number | null; months: number[] | null }
+export type AdjustStatus = "salin" | "kurangi" | "tambah" | "baru" | "realisasi" | "melebihi" | "terisi" | "dikunci" | "tanpa_sumber";
+export const emptyAdjustCounts = (): Record<AdjustStatus, number> => ({ salin: 0, kurangi: 0, tambah: 0, baru: 0, realisasi: 0, melebihi: 0, terisi: 0, dikunci: 0, tanpa_sumber: 0 });
+export interface AdjustTarget { itemId: string; label: string; pagu: number; mine: boolean; status: CashItemStatus; months: number[]; subCode?: string }
+export interface AdjustSource { pagu: number | null; months: number[] | null; subCode?: string }
 export interface AdjustRow {
   itemId: string; label: string; status: AdjustStatus; message: string;
   oldPagu: number | null; newPagu: number; oldTotal: number; newTotal: number; months?: number[];
 }
-export interface AdjustOutcome { rows: AdjustRow[]; others: number; counts: Record<AdjustStatus, number> }
+export interface AdjustOutcome { rows: AdjustRow[]; others: number; counts: Record<AdjustStatus, number>; warnings?: string[] }
 
 /**
  * Menyalin kas dari tahapan sebelumnya ke tahapan yang dibuka lalu menyesuaikannya dengan pagu baru.
@@ -221,9 +246,118 @@ export function planCashAdjust(targets: AdjustTarget[], source: Map<string, Adju
       : gap > 0 ? `Disalin; pagu baru lebih besar, sisa ${fromCents(gap).toLocaleString("id-ID")} belum dialokasikan` : "Disalin; pas sesuai pagu";
     rows.push({ ...base, newTotal, months: fit.months, status: fit.changed ? "kurangi" : "salin", message: msg });
   }
-  const counts: Record<AdjustStatus, number> = { salin: 0, kurangi: 0, realisasi: 0, melebihi: 0, terisi: 0, dikunci: 0, tanpa_sumber: 0 };
+  const counts = emptyAdjustCounts();
   for (const r of rows) counts[r.status]++;
   return { rows, others, counts };
+}
+
+/* ------------------------------------------------------------------ penyesuaian kas menurut TAHAPAN (Pergeseran / Perubahan) ------------------------------------------------------------------ */
+
+export type StageCode = "murni" | "pergeseran" | "perubahan";
+
+/** Indeks triwulan (0..3) dari tanggal DPA ISO (YYYY-MM-DD); null bila tidak ada. */
+export const quarterOfDate = (iso: string | null | undefined): number | null => {
+  const m = iso ? Number(iso.slice(5, 7)) : NaN;
+  return Number.isInteger(m) && m >= 1 && m <= 12 ? Math.floor((m - 1) / 3) : null;
+};
+
+/** Pembagian sen proporsional bobot (metode sisa terbesar); bobot semua nol -> rata. Jumlah tepat = total. */
+export function splitProportional(total: number, weights: number[]): number[] {
+  const w = weights.map((x) => Math.max(0, x));
+  const ww = w.reduce((a, b) => a + b, 0) > 0 ? w : w.map(() => 1);
+  const sum = ww.reduce((a, b) => a + b, 0);
+  const raw = ww.map((x) => (total * x) / sum);
+  const fl = raw.map(Math.floor);
+  let left = total - fl.reduce((a, b) => a + b, 0);
+  const order = raw.map((r, i) => ({ i, f: r - Math.floor(r) })).sort((a, b) => b.f - a.f || a.i - b.i);
+  for (const o of order) { if (left <= 0) break; fl[o.i]!++; left--; }
+  return fl;
+}
+
+/**
+ * Menyesuaikan Anggaran Kas (TRIWULAN) dengan perubahan pagu pada tahapan baru, per butir (kode rekening):
+ *  - pagu TIDAK berubah  -> kas tetap (disalin apa adanya)  [aturan Perubahan: yang tidak berubah tidak diubah];
+ *  - pagu turun          -> bila kas lama masih muat dalam pagu baru, tetap; bila tidak, kelebihannya dikurangkan dari triwulan paling akhir
+ *                           mundur sampai triwulan DPA, lalu triwulan sebelumnya bila masih kurang (triwulan yang sudah berjalan paling akhir disentuh);
+ *  - pagu naik           -> selisih ditambahkan pada triwulan DPA s.d. TW IV, proporsional kas lama pada triwulan tsb (rata bila kosong);
+ *  - butir baru (tak ada pada tahapan sumber) -> pagu dibagi rata pada triwulan DPA s.d. TW IV.
+ * Pergeseran: total pagu per SUB KEGIATAN harus sama dengan tahapan sumber (pergeseran hanya antar-rekening dalam sub kegiatan yang sama);
+ * pelanggarannya dilaporkan sebagai peringatan. Pergeseran dapat dilakukan beberapa kali setahun: pilih versi pergeseran sebelumnya sebagai sumber.
+ * Hasil selalu DRAF; butir diajukan/final tidak disentuh; isian yang sudah ada dilindungi kecuali overwrite.
+ */
+export function planCashByStage(
+  stage: StageCode, targets: AdjustTarget[], source: Map<string, AdjustSource>, dpaDate: string | null, overwrite: boolean,
+): AdjustOutcome {
+  const dq = quarterOfDate(dpaDate);
+  const start = dq ?? 0;
+  const rows: AdjustRow[] = [];
+  const warnings: string[] = [];
+  if (dq === null) warnings.push("Tanggal DPA versi yang dibuka belum diisi: perubahan kas ditempatkan pada seluruh triwulan (TW I–IV). Isi tanggal DPA di Input Anggaran agar hanya triwulan berjalan dan berikutnya yang berubah.");
+  let others = 0;
+  const fmt = (n: number) => n.toLocaleString("id-ID");
+
+  for (const t of targets) {
+    if (!t.mine) { others++; continue; }
+    const s = source.get(t.itemId);
+    const oldQ = (s?.months ? quarterSums(s.months) : [0, 0, 0, 0]).map(cents);
+    const oldTotal = oldQ.reduce((a, b) => a + b, 0);
+    const base = { itemId: t.itemId, label: t.label, oldPagu: s?.pagu ?? null, newPagu: t.pagu, oldTotal: fromCents(oldTotal), newTotal: 0 };
+    if (t.status === "submitted" || t.status === "final") { rows.push({ ...base, status: "dikunci", message: `Berstatus ${t.status === "final" ? "final" : "diajukan"}; tidak diubah` }); continue; }
+    if (!overwrite && cents(sumMonths(t.months)) > 0) { rows.push({ ...base, status: "terisi", message: "Sudah ada isian; dilindungi (centang “timpa” bila ingin mengganti)" }); continue; }
+
+    const P = cents(t.pagu);
+    const emit = (q: number[], status: AdjustStatus, message: string) => {
+      const months = quartersToMonthsCents(q);
+      rows.push({ ...base, newTotal: sumMonths(months), months, status, message });
+    };
+
+    if (!s || s.pagu === null) {
+      if (P <= 0) { rows.push({ ...base, status: "tanpa_sumber", message: "Butir baru berpagu 0; tidak ada kas" }); continue; }
+      const span = 4 - start;
+      const share = splitProportional(P, Array(span).fill(1));
+      const q = [0, 0, 0, 0]; share.forEach((v, k) => { q[start + k] = v; });
+      emit(q, "baru", `Butir baru pada tahapan ini; pagu ${fmt(t.pagu)} dibagi rata ${span === 4 ? "TW I–IV" : `TW ${start + 1}–IV`}`);
+      continue;
+    }
+    if (oldTotal === 0) { rows.push({ ...base, status: "tanpa_sumber", message: "Tidak ada kas pada tahapan sumber (belum disusun)" }); continue; }
+
+    const Po = cents(s.pagu);
+    if (P === Po) { emit(oldQ.slice(), "salin", "Pagu tidak berubah; kas tetap"); continue; }
+    if (P < Po) {
+      if (oldTotal <= P) { emit(oldQ.slice(), "salin", `Pagu turun (${fmt(s.pagu)} → ${fmt(t.pagu)}) tetapi kas lama masih muat; kas tetap`); continue; }
+      let excess = oldTotal - P;
+      const q = oldQ.slice();
+      const order = [...Array.from({ length: 4 - start }, (_, k) => 3 - k), ...Array.from({ length: start }, (_, k) => start - 1 - k)];
+      for (const i of order) { if (excess <= 0) break; const cut = Math.min(q[i]!, excess); q[i]! -= cut; excess -= cut; }
+      emit(q, "kurangi", `Pagu turun (${fmt(s.pagu)} → ${fmt(t.pagu)}); kas dikurangi ${fmt(fromCents(oldTotal - P))} dari triwulan akhir mundur`);
+      continue;
+    }
+    const delta = P - Po;
+    const span = 4 - start;
+    const share = splitProportional(delta, Array.from({ length: span }, (_, k) => oldQ[start + k]!));
+    const q = oldQ.slice(); share.forEach((v, k) => { q[start + k]! += v; });
+    emit(q, "tambah", `Pagu naik (${fmt(s.pagu)} → ${fmt(t.pagu)}); tambahan ${fmt(fromCents(delta))} ditempatkan pada ${span === 4 ? "TW I–IV" : `TW ${start + 1}–IV`}`);
+  }
+
+  if (stage === "pergeseran") {
+    const subOld = new Map<string, number>(), subNew = new Map<string, number>();
+    for (const [, v] of source) if (v.subCode && v.pagu !== null) subOld.set(v.subCode, (subOld.get(v.subCode) ?? 0) + cents(v.pagu));
+    for (const t of targets) if (t.subCode) subNew.set(t.subCode, (subNew.get(t.subCode) ?? 0) + cents(t.pagu));
+    for (const sub of new Set([...subOld.keys(), ...subNew.keys()])) {
+      const a = subOld.get(sub) ?? 0, b = subNew.get(sub) ?? 0;
+      if (a !== b) warnings.push(`Pergeseran: total pagu sub kegiatan ${sub} berubah (${fmt(fromCents(a))} → ${fmt(fromCents(b))}). Pergeseran hanya boleh memindahkan pagu antar-rekening dalam sub kegiatan yang sama; periksa Input Anggaran.`);
+    }
+  }
+  const counts = emptyAdjustCounts();
+  for (const r of rows) counts[r.status]++;
+  return { rows, others, counts, warnings };
+}
+
+/** 4 nilai triwulan (sen, integer) -> 12 bulan (rupiah). */
+function quartersToMonthsCents(q: number[]): number[] {
+  const out: number[] = [];
+  for (const c0 of q) { const c = Math.max(0, c0); const b = Math.floor(c / 3); out.push(fromCents(b), fromCents(b), fromCents(c - 2 * b)); }
+  return out;
 }
 
 /* ------------------------------------------------------------------ penyesuaian kas berbasis realisasi ------------------------------------------------------------------ */
@@ -293,7 +427,7 @@ export function planCashFromRealization(
       message: `Bulan sebelum ${MONTH_NAMES[m0]} = realisasi (${fromCents(closed.reduce((a, b) => a + b, 0)).toLocaleString("id-ID")}); sisa ${fromCents(rest).toLocaleString("id-ID")} dibagi ${MONTH_NAMES[m0]}–Des${cents(oldTotal) > 0 ? " mengikuti pola kas lama" : " secara rata"}`,
     });
   }
-  const counts: Record<AdjustStatus, number> = { salin: 0, kurangi: 0, realisasi: 0, melebihi: 0, terisi: 0, dikunci: 0, tanpa_sumber: 0 };
+  const counts = emptyAdjustCounts();
   for (const r of rows) counts[r.status]++;
   return { rows, others, counts };
 }
@@ -306,12 +440,14 @@ export interface CashImportState {
   counts?: Record<CashRowStatus, number>;
   rows?: CashPlannedRow[];
   truncated?: boolean;
+  note?: string;
   applied?: { saved: number; gagal: string[] };
 }
 export interface CashAdjustState {
   phase?: "idle" | "preview" | "done" | "error";
   error?: string;
   source?: string;
+  warnings?: string[];
   counts?: Record<AdjustStatus, number>;
   rows?: AdjustRow[];
   others?: number;
