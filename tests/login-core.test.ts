@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  CAPTCHA_ERROR, CONTEXT_FORM_ERROR, CONTEXT_UNAVAILABLE_ERROR, DUMMY_EMAIL, GENERIC_LOGIN_ERROR,
+  CAPTCHA_ERROR, CONTEXT_FORM_ERROR, DUMMY_EMAIL, GENERIC_LOGIN_ERROR,
   THROTTLED_LOGIN_ERROR, performLogin, type LoginDeps, type LoginInput, type ProfileLookup,
 } from "@/lib/auth/login-core";
 
@@ -213,13 +213,25 @@ describe("performLogin - tahun & tahapan anggaran pada halaman masuk", () => {
     }
   });
 
-  it("kata sandi benar tetapi konteks tidak tersedia -> sesi ditutup, tidak ada LOGIN_SUCCESS", async () => {
+  it("kata sandi benar tetapi konteks belum tersedia -> TETAP masuk tanpa konteks (admin dapat membuat versi anggaran)", async () => {
     const { deps, calls } = makeDeps({ versionId: null });
-    expect(await performLogin(deps, input)).toEqual(FAIL(CONTEXT_UNAVAILABLE_ERROR));
-    expect(calls.signOut).toHaveBeenCalledOnce();
-    expect(calls.touch).not.toHaveBeenCalled();
+    expect(await performLogin(deps, input)).toEqual({ ok: true, mustChangePassword: false, userId: "u1", context: null });
+    expect(calls.signOut).not.toHaveBeenCalled();
     expect(calls.audits.at(-1)).toMatchObject({ action: "LOGIN_CONTEXT_UNAVAILABLE", actorId: "u1" });
     expect(calls.audits.some((a) => a.action === "LOGIN_SUCCESS")).toBe(false);
+  });
+
+  it("IP tidak diketahui tidak dihitung pada pembatasan IP (tidak mengunci seluruh pengguna)", async () => {
+    const { deps } = makeDeps({ ipFails: 999 });
+    expect((await performLogin(deps, { ...input, ip: null })).ok).toBe(true);
+  });
+
+  it("masuk berhasil membersihkan catatan gagal username tersebut", async () => {
+    const { deps } = makeDeps();
+    const cleared: string[] = [];
+    deps.clearFailures = async (h) => void cleared.push(h);
+    await performLogin(deps, input);
+    expect(cleared).toEqual(["username#pptk.ekonomi"]);
   });
 
   it("konteks tidak diperiksa bila kata sandi salah (tahun tidak dapat diintip tanpa akun sah)", async () => {

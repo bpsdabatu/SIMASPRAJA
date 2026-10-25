@@ -67,3 +67,12 @@ Lihat `.env.example`. **Publik:** `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPAB
 - **Penyesuaian menurut tahapan**: Perubahan = pagu tetap → kas tetap, pagu berubah → kas disesuaikan; Pergeseran = pagu berpindah antar-rekening dalam sub kegiatan yang sama (peringatan bila total pagu sub kegiatan berubah), boleh berkali-kali (pilih versi pergeseran sebelumnya sebagai sumber).
 - **Menu Pengguna**: rekap akun + kata sandi sementara (terenkripsi AES-GCM di `account_temp_credentials`, hanya service role; terhapus saat pengguna mengganti sandi), reset cepat acak, unduh rekap Excel/CSV. Kata sandi pilihan pengguna tidak dapat dilihat (hanya hash di Supabase Auth).
 - Jalankan `supabase/migrations/0016_kata_sandi_sementara_dan_kas_triwulan.sql` (hanya menambah tabel). Dependensi baru: `unpdf@1.8.1`.
+
+
+## Pembaruan: perbaikan login admin, riwayat akun, reset akun, Anggaran Kas dari pagu (migrasi 0017)
+- **Penyebab "admin tidak bisa login" (diperbaiki):** setelah kata sandi benar, login dulu MENUTUP sesi bila tahun/tahapan yang dipilih belum punya versi anggaran. Pada basis data baru/habis direset, versi anggaran hanya bisa dibuat setelah masuk, sehingga admin terkunci. Kini akun yang sah tetap masuk dan diarahkan ke **Pilih Konteks**; admin dapat membuat tahun + tahapan (draf) di sana. Pembatasan percobaan juga diperbaiki: IP tak dikenal tidak lagi dihitung bersama, dan masuk berhasil membersihkan catatan gagal username tsb.
+- **Riwayat akun** (`account_history`, hanya menambah tabel): dibuat/di-reset/diganti/ditangguhkan/peran diubah beserta pelaku dan waktu; tampil di menu **Pengguna** (kolom Dibuat, Reset terakhir, kartu Riwayat akun) dan di unduhan Excel/CSV. Tidak menyimpan kata sandi. Login memakai **username**, bukan email.
+- **Reset akun:** `npm run accounts:reset -- --diagnose` (periksa semua akun), `-- --username admin`, `-- --all` (semua akun mendapat sandi acak baru + CSV rahasia), `-- --all --suspend-others` (hanya admin aktif). Akun tidak dihapus agar jejak audit dan pembuat data anggaran tetap utuh.
+- **Anggaran Kas dari Input Anggaran:** mode baru **Susun dari pagu Input Anggaran** (tanpa tahapan sumber, rupiah utuh, TW I–IV untuk Murni; mulai TW DPA untuk tahapan lain) di samping penyesuaian Pergeseran/Perubahan yang sudah ada.
+- `.env.example` ditambahkan (sebelumnya tidak ada di zip sehingga tes keamanan gagal). Pembagian kas butir baru kini memakai rupiah utuh (134/133/133, bukan 133,34).
+- Jalankan `supabase/migrations/0017_riwayat_akun.sql` di Supabase (aman diulang).

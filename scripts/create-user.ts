@@ -87,6 +87,7 @@ async function main() {
     fail(`Gagal menyimpan profil, akun dibatalkan: ${(e as Error).message}`);
   }
 
+  await sb.from("account_history").insert({ organization_id: org!.id, profile_id: uid, username, full_name: fullName, event: "DIBUAT", detail: { oleh: "scripts/create-user", peran: [role] } }); // abaikan galat bila migrasi 0017 belum dijalankan
   console.log(`Berhasil: pengguna "${username}" (${role}) dibuat. Wajib ganti kata sandi saat masuk pertama.`);
 }
 

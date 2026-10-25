@@ -76,6 +76,15 @@ describe("penyesuaian menurut tahapan", () => {
     expect(q(n.months)[0]).toBe(0);
   });
 
+  it("susun dari pagu tanpa tahapan sumber (Murni): bagi rata TW I–IV dalam rupiah utuh, jumlah tepat pagu", () => {
+    const out = planCashByStage("murni", [tgt("x", 1_000_001, []), tgt("y", 0, [])], new Map(), null, false);
+    const x = out.rows.find((r) => r.itemId === "x")!, y = out.rows.find((r) => r.itemId === "y")!;
+    expect(x.status).toBe("baru");
+    expect(q(x.months)).toEqual([250_001, 250_000, 250_000, 250_000]);
+    expect(sumMonths(x.months!)).toBe(1_000_001);
+    expect(y.status).toBe("tanpa_sumber");
+  });
+
   it("Pergeseran: total pagu per sub kegiatan harus tetap, selain itu diperingatkan", () => {
     const ok = planCashByStage("pergeseran", [tgt(A, 1000, [], { subCode: "S1" }), tgt(B, 600, [], { subCode: "S1" }), tgt(C, 800, [], { subCode: "S1" })], source, "2026-04-20", false);
     expect(ok.warnings?.some((w) => w.includes("Pergeseran:"))).toBe(false); // 1200+400+800 = 1000+600+800

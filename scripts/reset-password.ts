@@ -6,6 +6,7 @@
  *   NEW_PASSWORD='KataSandiBaru123' npm run user:reset -- --username admin
  *   npm run user:reset -- --username admin --diagnose      # hanya memeriksa penyebab, tanpa mengubah apa pun
  *
+ * Untuk reset banyak akun sekaligus / perbaikan otomatis auth_identities gunakan: npm run accounts:reset -- --diagnose.
  * Setelah ini pengguna wajib mengganti kata sandi saat masuk. Perintah ini memakai .env.local (NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY).
  */
 import { randomInt } from "node:crypto";
@@ -72,6 +73,7 @@ async function main() {
   const del = await sb.from("auth_attempts").delete().eq("succeeded", false).gte("attempted_at", since);
   if (del.error) console.warn(`Peringatan: gagal membersihkan pembatasan login: ${del.error.message}`);
   await sb.from("account_temp_credentials").delete().eq("profile_id", p.id); // bersihkan sandi sementara lama bila tabel ada
+  await sb.from("account_history").insert({ organization_id: p.organization_id, profile_id: p.id, username: p.username, full_name: null, event: "SANDI_DIRESET", detail: { oleh: "scripts/reset-password" } }); // abaikan galat bila migrasi 0017 belum dijalankan
   await sb.from("audit_logs").insert({ action: "USER_PASSWORD_RESET", organization_id: p.organization_id, table_name: "profiles", record_id: p.id, context: { by: "scripts/reset-password" } });
 
   // Uji masuk seperti aplikasi (kunci anon + email internal + kata sandi): memisahkan masalah data Supabase vs konfigurasi aplikasi.
