@@ -34,6 +34,7 @@ async function main() {
   const username = (arg("username") ?? "").trim().toLowerCase();
   if (!/^[a-z0-9._-]{3,32}$/.test(username)) fail("--username wajib diisi (3-32 karakter: a-z, 0-9, titik, garis bawah, strip).");
   const sb = createClient(url!, key!, { auth: { autoRefreshToken: false, persistSession: false } });
+  console.log(`Proyek Supabase yang dipakai skrip: ${new URL(url!).host}  <-- HARUS sama dengan NEXT_PUBLIC_SUPABASE_URL di Vercel/Netlify`);
 
   const prof = await sb.from("profiles").select("id, username, status, must_change_password, organization_id, auth_identities(internal_email), user_roles(role_code)").eq("username", username).maybeSingle();
   if (prof.error) fail(`Tidak dapat membaca tabel profiles: ${prof.error.message}. Pastikan kunci service_role dan proyek Supabase benar.`);
@@ -73,6 +74,14 @@ async function main() {
   await sb.from("account_temp_credentials").delete().eq("profile_id", p.id); // bersihkan sandi sementara lama bila tabel ada
   await sb.from("audit_logs").insert({ action: "USER_PASSWORD_RESET", organization_id: p.organization_id, table_name: "profiles", record_id: p.id, context: { by: "scripts/reset-password" } });
 
+  // Uji masuk seperti aplikasi (kunci anon + email internal + kata sandi): memisahkan masalah data Supabase vs konfigurasi aplikasi.
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (anon) {
+    const probe = createClient(url!, anon, { auth: { autoRefreshToken: false, persistSession: false } });
+    const t = await probe.auth.signInWithPassword({ email: identity.internal_email, password });
+    console.log(t.error ? `\nUji masuk ke Supabase GAGAL: ${t.error.message}` : "\nUji masuk ke Supabase BERHASIL (data akun benar).");
+    if (!t.error) console.log("  Bila aplikasi tetap menolak, penyebabnya konfigurasi aplikasi: variabel lingkungan di hosting menunjuk proyek/kunci berbeda, atau belum deploy ulang.");
+  }
   console.log("\nBerhasil.");
   console.log(`  username      : ${username}`);
   console.log(`  kata sandi    : ${password}`);
