@@ -262,6 +262,12 @@ export const quarterOfDate = (iso: string | null | undefined): number | null => 
 };
 
 /** Pembagian sen proporsional bobot (metode sisa terbesar); bobot semua nol -> rata. Jumlah tepat = total. */
+/** Pembagian dalam sen, tetapi memakai rupiah UTUH bila total berupa rupiah bulat (kas lebih rapi: 134 / 133 / 133, bukan 133,34). */
+export function splitCashAmount(totalCents: number, weights: number[]): number[] {
+  if (totalCents % 100 === 0) return splitProportional(totalCents / 100, weights).map((v) => v * 100);
+  return splitProportional(totalCents, weights);
+}
+
 export function splitProportional(total: number, weights: number[]): number[] {
   const w = weights.map((x) => Math.max(0, x));
   const ww = w.reduce((a, b) => a + b, 0) > 0 ? w : w.map(() => 1);
@@ -314,7 +320,7 @@ export function planCashByStage(
     if (!s || s.pagu === null) {
       if (P <= 0) { rows.push({ ...base, status: "tanpa_sumber", message: "Butir baru berpagu 0; tidak ada kas" }); continue; }
       const span = 4 - start;
-      const share = splitProportional(P, Array(span).fill(1));
+      const share = splitCashAmount(P, Array(span).fill(1));
       const q = [0, 0, 0, 0]; share.forEach((v, k) => { q[start + k] = v; });
       emit(q, "baru", `Butir baru pada tahapan ini; pagu ${fmt(t.pagu)} dibagi rata ${span === 4 ? "TW I–IV" : `TW ${start + 1}–IV`}`);
       continue;
@@ -334,7 +340,7 @@ export function planCashByStage(
     }
     const delta = P - Po;
     const span = 4 - start;
-    const share = splitProportional(delta, Array.from({ length: span }, (_, k) => oldQ[start + k]!));
+    const share = splitCashAmount(delta, Array.from({ length: span }, (_, k) => oldQ[start + k]!));
     const q = oldQ.slice(); share.forEach((v, k) => { q[start + k]! += v; });
     emit(q, "tambah", `Pagu naik (${fmt(s.pagu)} → ${fmt(t.pagu)}); tambahan ${fmt(fromCents(delta))} ditempatkan pada ${span === 4 ? "TW I–IV" : `TW ${start + 1}–IV`}`);
   }

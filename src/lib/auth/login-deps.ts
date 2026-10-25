@@ -54,6 +54,10 @@ export async function buildLoginDeps(): Promise<LoginDeps> {
       });
     },
 
+    async clearFailures(usernameHash) {
+      await admin.from("auth_attempts").delete().eq("username_hash", usernameHash).eq("succeeded", false);
+    },
+
     async findProfile(username): Promise<ProfileLookup | null> {
       const { data, error } = await admin
         .from("profiles")

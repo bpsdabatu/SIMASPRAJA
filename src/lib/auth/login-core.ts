@@ -11,7 +11,10 @@
  *  - Throttling per username (dihash) dan per IP (dihash), termasuk untuk username yang tidak ada.
  *  - Untuk username tak dikenal tetap dilakukan satu panggilan signIn palsu agar waktu respons serupa.
  *  - Konteks (tahun/tahapan) baru diperiksa SETELAH kata sandi benar, sehingga daftar tahun tidak
- *    dapat dipakai penyerang untuk mengintip data; bila konteks tidak tersedia sesi langsung ditutup.
+ *    dapat dipakai penyerang untuk mengintip data.
+ *  - Bila konteks yang dipilih belum tersedia, akun yang sah TETAP masuk tanpa konteks dan diarahkan ke /pilih-konteks
+ *    (tanpa cookie konteks, middleware menutup semua modul). Sebelumnya sesi ditutup sehingga ADMIN tidak dapat masuk untuk
+ *    membuat versi anggaran yang justru dibutuhkan agar konteks tersedia (jebakan "admin tidak bisa login").
  */
 import { isStage, type Stage } from "@/lib/auth/context";
 
@@ -19,8 +22,6 @@ export const GENERIC_LOGIN_ERROR = "Username atau kata sandi tidak sesuai.";
 export const THROTTLED_LOGIN_ERROR = "Terlalu banyak percobaan masuk. Silakan coba lagi beberapa menit lagi.";
 export const CAPTCHA_ERROR = "Kode keamanan tidak sesuai atau sudah kedaluwarsa. Silakan masukkan kode yang baru.";
 export const CONTEXT_FORM_ERROR = "Pilih Tahun Anggaran dan Tahapan Anggaran yang valid.";
-export const CONTEXT_UNAVAILABLE_ERROR =
-  "Tahun dan tahapan anggaran yang dipilih belum tersedia (belum dibuat/diaktifkan) untuk akun Anda. Pilih kombinasi lain, atau minta administrator membuat dan mengaktifkannya di menu Input Anggaran.";
 export const DUMMY_EMAIL = "tidak-ada@auth.simaspraja.invalid";
 
 export const USERNAME_RE = /^[a-z0-9._-]{3,32}$/;
@@ -41,6 +42,8 @@ export interface LoginDeps {
   consumeCaptcha(token: string, answer: string): Promise<boolean>;
   countFailures(by: "username_hash" | "ip_hash", hash: string, sinceIso: string): Promise<number>;
   recordAttempt(a: { usernameHash: string; ipHash: string; succeeded: boolean }): Promise<void>;
+  /** Opsional: menghapus catatan gagal username ini setelah masuk berhasil (salah ketik sebelumnya tidak ikut menghitung). */
+  clearFailures?(usernameHash: string): Promise<void>;
   findProfile(username: string): Promise<ProfileLookup | null>;
   signIn(email: string, password: string): Promise<{ ok: boolean }>;
   signOut(): Promise<void>;
@@ -61,7 +64,8 @@ export type LoginResult =
       ok: true;
       mustChangePassword: boolean;
       userId: string;
-      context: { year: number; stage: Stage; versionId: string };
+      /** null = kata sandi benar tetapi tahun/tahapan yang dipilih belum tersedia; pengguna memilih/membuatnya di /pilih-konteks. */
+      context: { year: number; stage: Stage; versionId: string } | null;
     }
   | { ok: false; message: string; refreshCaptcha: boolean };
 
@@ -105,9 +109,10 @@ export async function performLogin(deps: LoginDeps, input: LoginInput): Promise<
   }
 
   const since = new Date(deps.now().getTime() - deps.config.windowMinutes * 60_000).toISOString();
+  // IP tidak diketahui: jangan menumpuk semua pengguna pada satu ember "unknown" (satu orang salah ketik mengunci seluruh kantor).
   const [userFails, ipFails] = await Promise.all([
     deps.countFailures("username_hash", usernameHash, since),
-    deps.countFailures("ip_hash", ipHash, since),
+    input.ip ? deps.countFailures("ip_hash", ipHash, since) : Promise.resolve(0),
   ]);
   if (userFails >= deps.config.maxFailuresPerUser || ipFails >= deps.config.maxFailuresPerIp) {
     await deps.audit({ action: "LOGIN_THROTTLED", ipHash });
@@ -134,8 +139,9 @@ export async function performLogin(deps: LoginDeps, input: LoginInput): Promise<
   // Kata sandi benar. Sekarang validasi konteks anggaran ke database (berbasis RLS pengguna ini).
   const versionId = await deps.resolveContext(input.year, stage);
   if (!versionId) {
-    await deps.signOut();
     await deps.recordAttempt({ usernameHash, ipHash, succeeded: true });
+    await deps.clearFailures?.(usernameHash);
+    await deps.touchLastLogin(profile.id);
     await deps.audit({
       action: "LOGIN_CONTEXT_UNAVAILABLE",
       actorId: profile.id,
@@ -143,10 +149,11 @@ export async function performLogin(deps: LoginDeps, input: LoginInput): Promise<
       ipHash,
       context: { year: input.year, stage },
     });
-    return fail(CONTEXT_UNAVAILABLE_ERROR);
+    return { ok: true, mustChangePassword: profile.mustChangePassword, userId: profile.id, context: null };
   }
 
   await deps.recordAttempt({ usernameHash, ipHash, succeeded: true });
+  await deps.clearFailures?.(usernameHash);
   await deps.touchLastLogin(profile.id);
   await deps.audit({
     action: "LOGIN_SUCCESS",
