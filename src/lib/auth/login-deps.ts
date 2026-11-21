@@ -4,6 +4,7 @@ import { userClient } from "@/lib/supabase/server";
 import { keyedHash } from "@/lib/auth/crypto";
 import { checkCaptchaAnswer, openCaptchaToken } from "@/lib/auth/captcha";
 import { serverEnv } from "@/lib/env";
+import { classifySignInError, describeSignInError } from "@/lib/auth/signin-error";
 import type { LoginDeps, ProfileLookup } from "@/lib/auth/login-core";
 
 /** Implementasi nyata `LoginDeps` (server saja). */
@@ -64,7 +65,10 @@ export async function buildLoginDeps(): Promise<LoginDeps> {
         .select("id, status, organization_id, must_change_password, auth_identities(internal_email)")
         .eq("username", username)
         .maybeSingle();
-      if (error || !data) return null;
+      // Galat basis data (kunci service_role salah, tabel/migrasi belum ada, proyek salah) BUKAN "username tidak ada":
+      // dilempar agar pengguna melihat pesan galat sistem dan penyebabnya tercatat di log server.
+      if (error) throw new Error(`Gagal membaca profil login: ${error.code ?? ""} ${error.message}`.trim());
+      if (!data) return null;
       const identity = Array.isArray(data.auth_identities) ? data.auth_identities[0] : data.auth_identities;
       if (!identity?.internal_email) return null;
       return {
@@ -78,7 +82,10 @@ export async function buildLoginDeps(): Promise<LoginDeps> {
 
     async signIn(email, password) {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
-      return { ok: !error };
+      if (!error) return { ok: true };
+      // Kata sandi salah dsb. -> ok:false (pesan generik). Galat sistem (kunci anon/URL salah, jaringan, rate limit) -> dilempar.
+      if (classifySignInError(error) === "credentials") return { ok: false };
+      throw new Error(`Supabase Auth gagal: ${describeSignInError(error)}`);
     },
 
     async signOut() {
