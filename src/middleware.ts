@@ -13,14 +13,21 @@ import { CONTEXT_COOKIE, verifyContext } from "@/lib/auth/context";
 const OPEN_PATHS = new Set(["/"]);
 const PUBLIC_PATHS = new Set(["/login"]);
 const NO_CONTEXT_PATHS = ["/pilih-konteks", "/ganti-password"];
+// Batas waktu panggilan ke Supabase di middleware. Tanpa ini, Supabase yang tidak merespons (proyek dijeda/URL salah/jaringan)
+// membuat SELURUH halaman menggantung sampai Vercel memutus dengan 504 MIDDLEWARE_INVOCATION_TIMEOUT.
+const AUTH_TIMEOUT_MS = 8000;
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
+
+  // Beranda terbuka untuk siapa pun: tidak perlu menunggu Supabase sama sekali.
+  if (OPEN_PATHS.has(request.nextUrl.pathname)) return response;
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      global: { fetch: (input, init) => fetch(input, { ...init, signal: init?.signal ?? AbortSignal.timeout(AUTH_TIMEOUT_MS) }) },
       cookies: {
         getAll: () => request.cookies.getAll(),
         setAll: (list) => {
@@ -32,9 +39,17 @@ export async function middleware(request: NextRequest) {
     },
   );
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // Gagal/lambat/tidak terjangkau = diperlakukan sebagai belum masuk (halaman /login tetap terbuka, tidak 504).
+  let user: { id: string } | null = null;
+  try {
+    const res = await Promise.race([
+      supabase.auth.getUser(),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("auth timeout")), AUTH_TIMEOUT_MS)),
+    ]);
+    user = res.data.user;
+  } catch {
+    user = null;
+  }
   const path = request.nextUrl.pathname;
 
   const redirectTo = (to: string) => {
