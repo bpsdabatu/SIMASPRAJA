@@ -15,3 +15,10 @@ export async function requireAdminModule(permission: string) {
   if (!ctx.user.roles.includes("admin")) redirect("/dashboard?akses=ditolak");
   return ctx;
 }
+
+/** Seperti requireModule, tetapi cukup memiliki SALAH SATU izin. */
+export async function requireAnyModule(permissions: string[]) {
+  const ctx = await requireContext();
+  if (!permissions.some((p) => ctx.user.permissions.has(p))) redirect("/dashboard?akses=ditolak");
+  return ctx;
+}

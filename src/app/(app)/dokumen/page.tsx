@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Plus } from "lucide-react";
+import { Download, Plus } from "lucide-react";
 import { requireModule } from "@/lib/auth/guard";
 import { userClient } from "@/lib/supabase/server";
 import { usersWithRole } from "@/lib/lookups";
-import { DOC_TYPES } from "@/lib/documents";
+import { canAuthorDocuments, DOC_TYPES } from "@/lib/documents";
 import { DOC_STATUS } from "@/lib/status";
 import { formatDateTimeWIB } from "@/lib/format";
 import { Badge, Card, CardHeader } from "@/components/ui/card";
@@ -25,7 +25,7 @@ export default async function DokumenPage({ searchParams }: { searchParams: Prom
   const sb = await userClient();
   let q = sb.from("procurement_documents").select("id, doc_type, title, status, created_at, budget_item_id").order("created_at", { ascending: false }).limit(500);
   if (status) q = q.eq("status", status);
-  const canCreate = user.permissions.has("document.edit");
+  const canCreate = canAuthorDocuments(user.permissions);
   const myTypes = Object.entries(DOC_TYPES).filter(([, t]) => t.creatorRoles.some((r) => (user.roles as string[]).includes(r)));
   const [{ data, error }, { data: items }, ppk, ppbj] = await Promise.all([
     q,
@@ -41,10 +41,11 @@ export default async function DokumenPage({ searchParams }: { searchParams: Prom
       <PageHeader eyebrow="Pengadaan" title="Dokumen Pengadaan" description="Alur Nota Dinas dan DPP: penyusunan, pengajuan, reviu PPBJ dengan temuan, perbaikan berversi, hingga Berita Acara Reviu. Templat resmi akan disesuaikan setelah berkas instansi diterima." />
       <Flash ok={sp.ok} err={sp.err} />
 
+      {!canCreate && <p className="rounded-lg bg-slate-50 px-4 py-3 text-sm text-slate-600">Dokumen baru disusun oleh PPTK (Nota Dinas PPTK, DPP) dan PPK (Nota Dinas PPK). Peran Anda dapat melihat daftar, mengunduh, dan memproses dokumen yang ditugaskan.</p>}
       {canCreate && myTypes.length > 0 && (
         <Card>
-          <details>
-            <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 text-sm font-semibold text-navy-800 [&::-webkit-details-marker]:hidden"><Plus size={16} aria-hidden /> Buat dokumen baru</summary>
+          <details open={(data ?? []).length === 0}>
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 text-sm font-semibold text-navy-800 [&::-webkit-details-marker]:hidden"><Plus size={16} aria-hidden /> Tambah Dokumen (Nota Dinas / DPP)</summary>
             {mine.length === 0 ? <p className="border-t border-slate-100 px-5 py-4 text-sm text-slate-600">Belum ada butir anggaran yang dapat Anda akses pada konteks ini.</p> : (
               <form action={createDocumentAction} className="grid gap-4 border-t border-slate-100 p-5 sm:grid-cols-2">
                 <Field label="Jenis dokumen" htmlFor="type"><Select id="type" name="type" required>{myTypes.map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}</Select></Field>
@@ -65,9 +66,11 @@ export default async function DokumenPage({ searchParams }: { searchParams: Prom
 
       <Card>
         <CardHeader title={`Dokumen (${data?.length ?? 0})`} actions={
-          <form action="/dokumen" className="flex gap-2">
+          <form action="/dokumen" className="flex flex-wrap gap-2">
             <Select name="status" defaultValue={status} aria-label="Filter status" className="h-9 w-48"><option value="">Semua status</option>{Object.entries(DOC_STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</Select>
             <button className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-9")}>Terapkan</button>
+            <a href={`/dokumen/export${status ? `?status=${status}` : ""}`} className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-9 gap-1")}><Download size={14} aria-hidden /> Excel</a>
+            <a href={`/dokumen/export?format=csv${status ? `&status=${status}` : ""}`} className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-9 gap-1")}><Download size={14} aria-hidden /> CSV</a>
           </form>} />
         {error ? <EmptyState title="Data tidak dapat dimuat">Muat ulang halaman.</EmptyState> : (data ?? []).length === 0 ? <EmptyState title="Belum ada dokumen">Dokumen yang Anda susun atau reviu akan tampil di sini.</EmptyState> : (
           <TableWrap>

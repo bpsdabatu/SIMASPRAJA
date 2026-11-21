@@ -1,10 +1,10 @@
 "use server";
 
-import { requireModule } from "@/lib/auth/guard";
+import { requireAnyModule, requireModule } from "@/lib/auth/guard";
 import { userClient } from "@/lib/supabase/server";
 import { friendlyError, isUuid, optStr, runAction, str, uuidOrNull } from "@/lib/action-utils";
 import { flashRedirect } from "@/lib/flash";
-import { contentFrom, DOC_TYPES } from "@/lib/documents";
+import { contentFrom, DOC_AUTHOR_PERMISSIONS, DOC_TYPES } from "@/lib/documents";
 
 const LIST = "/dokumen";
 const detail = (id: string) => `/dokumen/${id}`;
@@ -15,7 +15,7 @@ function docId(fd: FormData) {
 }
 
 export async function createDocumentAction(fd: FormData): Promise<void> {
-  await requireModule("document.edit");
+  await requireAnyModule([...DOC_AUTHOR_PERMISSIONS]);
   const type = str(fd, "type", 40);
   const item = str(fd, "itemId", 40);
   const title = str(fd, "title", 300);
@@ -34,7 +34,7 @@ export async function createDocumentAction(fd: FormData): Promise<void> {
 }
 
 export async function saveRevisionAction(fd: FormData): Promise<void> {
-  await requireModule("document.edit");
+  await requireAnyModule([...DOC_AUTHOR_PERMISSIONS]);
   const id = docId(fd);
   const type = str(fd, "type", 40);
   const supabase = await userClient();
@@ -43,8 +43,8 @@ export async function saveRevisionAction(fd: FormData): Promise<void> {
   );
 }
 
-const simple = (rpc: string, perm: string, ok: string, withReason = false) => async (fd: FormData): Promise<void> => {
-  await requireModule(perm);
+const simple = (rpc: string, perm: string | string[], ok: string, withReason = false) => async (fd: FormData): Promise<void> => {
+  await (Array.isArray(perm) ? requireAnyModule(perm) : requireModule(perm));
   const id = docId(fd);
   const supabase = await userClient();
   const args: Record<string, unknown> = { p_doc: id };
@@ -52,10 +52,10 @@ const simple = (rpc: string, perm: string, ok: string, withReason = false) => as
   return runAction(detail(id), ok, async () => supabase.rpc(rpc, args));
 };
 
-export const submitDocumentAction = async (fd: FormData) => simple("submit_document", "document.submit", "Dokumen diajukan.")(fd);
+export const submitDocumentAction = async (fd: FormData) => simple("submit_document", [...DOC_AUTHOR_PERMISSIONS], "Dokumen diajukan.")(fd);
 export const completeReviewAction = async (fd: FormData) => simple("complete_review", "document.review", "Reviu diselesaikan.")(fd);
 export const returnDocumentAction = async (fd: FormData) => simple("return_document", "document.view", "Dokumen dikembalikan untuk perbaikan.", true)(fd);
-export const cancelDocumentAction = async (fd: FormData) => simple("cancel_document", "document.edit", "Dokumen dibatalkan.", true)(fd);
+export const cancelDocumentAction = async (fd: FormData) => simple("cancel_document", [...DOC_AUTHOR_PERMISSIONS], "Dokumen dibatalkan.", true)(fd);
 
 export async function startReviewAction(fd: FormData): Promise<void> {
   await requireModule("document.review");

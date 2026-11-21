@@ -86,7 +86,7 @@ export default async function DokumenDetail({ params, searchParams }: { params: 
         )}
         {(owner && editable || owner && doc.status === "draft") && (
           <div className="no-print flex flex-wrap gap-2 border-t border-slate-100 p-5">
-            {P.has("document.submit") && editable && (
+            {editable && (
               <form action={submitDocumentAction}><input type="hidden" name="docId" value={id} /><ConfirmSubmit variant="accent" message="Ajukan dokumen ini untuk reviu? Setelah diajukan isi tidak dapat diubah.">Ajukan</ConfirmSubmit></form>
             )}
             <form action={cancelDocumentAction} className="flex gap-2"><input type="hidden" name="docId" value={id} />

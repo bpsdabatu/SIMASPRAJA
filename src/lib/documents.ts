@@ -32,3 +32,7 @@ export function contentFrom(fd: FormData, type: string): Record<string, string> 
   for (const f of DOC_TYPES[type]?.fields ?? []) out[f.key] = String(fd.get(`f_${f.key}`) ?? "").trim().slice(0, f.kind === "textarea" ? 5000 : 300);
   return out;
 }
+
+/** Izin penyusun dokumen yang benar-benar ada di database (pemilik dokumen & RLS menjadi penentu akhir). */
+export const DOC_AUTHOR_PERMISSIONS = ["document.create_pptk", "document.create_ppk"] as const;
+export const canAuthorDocuments = (permissions: ReadonlySet<string>) => DOC_AUTHOR_PERMISSIONS.some((p) => permissions.has(p));
