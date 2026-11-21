@@ -80,7 +80,7 @@ nav, .overflow-x-auto { scrollbar-width: thin; scrollbar-color: rgba(100,116,139
 /* Cetak: sembunyikan kerangka aplikasi, tampilkan kop laporan */
 .print-only { display: none; }
 @media print {
-  @page { size: A4 landscape; margin: 14mm 12mm; }
+  /* Ukuran/orientasi/margin kertas (@page) diatur dinamis dari Pengaturan Cetak (lihat layout aplikasi); bawaan A4 lanskap. */
   aside, header[data-noprint], .no-print, footer[data-noprint] { display: none !important; }
   .print-only { display: block !important; }
   body { background: white !important; font-size: 11px; }

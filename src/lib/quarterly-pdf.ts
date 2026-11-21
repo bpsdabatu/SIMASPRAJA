@@ -1,13 +1,15 @@
 import PDFDocument from "pdfkit";
 import { dateID, pct, rp, QUARTER_LABEL, type Line, type QuarterReport } from "@/lib/quarterly-core";
+import { DEFAULT_PRINT, MARGINS, mmToPt, pageSizeMm, type PrintSettings } from "@/lib/print-settings";
 
-/** PDF laporan triwulanan (A4 landscape). Font Helvetica = metrik setara Arial (font standar PDF, tanpa berkas font tertanam). */
+/** PDF laporan triwulanan (kertas/orientasi/margin mengikuti Pengaturan Cetak; bawaan A4 landscape). Font Helvetica = metrik setara Arial (font standar PDF, tanpa berkas font tertanam). */
 const NAVY = "#0a2140", BLUE = "#143d6b", GOLD = "#c29d4d", GREY = "#64748b", LINE = "#cbd5e1", SOFT = "#eff4fa";
 const STATUS_COLOR: Record<string, string> = { "Sesuai target": "#047857", "Perlu perhatian": "#b45309", "Di bawah target": "#b91c1c", "Belum ada target kas": "#64748b" };
-const M = 36;
 
-export function buildQuarterPdf(r: QuarterReport): Promise<Buffer> {
-  const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: M, bufferPages: true, info: { Title: `Laporan Capaian ${r.label} TA ${r.year}`, Author: "SIMASPRAJA" } });
+export function buildQuarterPdf(r: QuarterReport, print: PrintSettings = DEFAULT_PRINT): Promise<Buffer> {
+  const [pw, ph] = pageSizeMm(print);
+  const M = Math.round(mmToPt(Math.max(MARGINS[print.margin].h, MARGINS[print.margin].v)));
+  const doc = new PDFDocument({ size: [mmToPt(pw), mmToPt(ph)], margin: M, bufferPages: true, info: { Title: `Laporan Capaian ${r.label} TA ${r.year}`, Author: "SIMASPRAJA" } });
   const chunks: Buffer[] = [];
   doc.on("data", (c: Buffer) => chunks.push(c));
   const done = new Promise<Buffer>((res) => doc.on("end", () => res(Buffer.concat(chunks))));
@@ -45,11 +47,11 @@ export function buildQuarterPdf(r: QuarterReport): Promise<Buffer> {
 
   // ---- Grafik per triwulan (target kas vs realisasi) ----
   F(true).fontSize(10).fillColor(NAVY).text("Target Anggaran Kas dan Realisasi per Triwulan", M, doc.y);
-  const cy = doc.y + 6, ch = 92, cw = 360, base = cy + ch;
+  const cy = doc.y + 6, ch = 92, cw = Math.min(360, Math.round(W * 0.5)), base = cy + ch;
   const maxV = Math.max(1, ...r.perQuarter.flatMap((p) => [p.kas, p.real]));
   doc.moveTo(M, base).lineTo(M + cw, base).lineWidth(0.7).strokeColor(LINE).stroke();
   r.perQuarter.forEach((p, i) => {
-    const gx = M + 14 + i * 88, bwid = 26;
+    const step = (cw - 8) / 4, bwid = Math.min(26, Math.floor((step - 12) / 2)), gx = M + 8 + i * step + (step - 2 * bwid - 3) / 2;
     const hk = (p.kas / maxV) * (ch - 18), hr = (p.real / maxV) * (ch - 18);
     doc.rect(gx, base - hk, bwid, hk).fill(BLUE);
     doc.rect(gx + bwid + 3, base - hr, bwid, hr).fill(GOLD);
@@ -59,7 +61,7 @@ export function buildQuarterPdf(r: QuarterReport): Promise<Buffer> {
   doc.rect(M + cw + 14, cy + 22, 8, 8).fill(GOLD); F().fontSize(8).fillColor("#334155").text("Realisasi sah", M + cw + 26, cy + 21);
 
   // Bilah capaian
-  const bx = M + cw + 150, bwFull = W - cw - 150;
+  const bx = M + cw + 150, bwFull = Math.max(90, W - cw - 150);
   const bar = (label: string, v: number | null, yy: number, color: string) => {
     F().fontSize(8).fillColor("#334155").text(label, bx, yy, { width: bwFull });
     doc.roundedRect(bx, yy + 11, bwFull, 9, 3).fill("#e2e8f0");

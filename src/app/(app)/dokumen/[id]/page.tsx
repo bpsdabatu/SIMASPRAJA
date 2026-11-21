@@ -4,19 +4,19 @@ import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { requireModule } from "@/lib/auth/guard";
 import { userClient } from "@/lib/supabase/server";
-import { getOrganizationName } from "@/lib/lookups";
+import { getOrganizationName, usersWithRole } from "@/lib/lookups";
 import { isUuid } from "@/lib/action-utils";
 import { DOC_TYPES } from "@/lib/documents";
 import { DOC_STATUS } from "@/lib/status";
 import { formatDateTimeWIB } from "@/lib/format";
 import { Badge, Card, CardHeader } from "@/components/ui/card";
-import { Field, Input, Textarea } from "@/components/ui/input";
+import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Flash, PageHeader } from "@/components/ui/page";
 import { ConfirmSubmit, PrintButton, SubmitButton } from "@/components/ui/submit-button";
 import { PrintFooter, PrintHeader, SignatureBlock } from "@/components/ui/report";
 import {
   addFindingAction, cancelDocumentAction, completeReviewAction, issueMinutesAction, resolveFindingAction,
-  returnDocumentAction, saveRevisionAction, startReviewAction, submitDocumentAction,
+  returnDocumentAction, saveRevisionAction, setAssigneesAction, startReviewAction, submitDocumentAction,
 } from "../actions";
 
 export const metadata: Metadata = { title: "Detail Dokumen" };
@@ -50,6 +50,13 @@ export default async function DokumenDetail({ params, searchParams }: { params: 
   const isReviewer = doc.assigned_ppbj_id === user.id;
   const isPpk = doc.assigned_ppk_id === user.id;
   const P = user.permissions;
+  const assigneeIds = [doc.assigned_ppk_id, doc.assigned_ppbj_id].filter((x): x is string => !!x);
+  const [{ data: assigneeRows }, ppkOpts, ppbjOpts] = await Promise.all([
+    assigneeIds.length ? sb.from("profiles").select("id, full_name").in("id", assigneeIds) : Promise.resolve({ data: [] as { id: string; full_name: string }[] }),
+    editable ? usersWithRole(sb, "ppk") : Promise.resolve([]),
+    editable ? usersWithRole(sb, "ppbj") : Promise.resolve([]),
+  ]);
+  const nameOf = (uid: string | null) => (uid ? (assigneeRows ?? []).find((r) => r.id === uid)?.full_name ?? "—" : "Belum ditentukan");
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -92,6 +99,25 @@ export default async function DokumenDetail({ params, searchParams }: { params: 
             <form action={cancelDocumentAction} className="flex gap-2"><input type="hidden" name="docId" value={id} />
               <Input name="reason" required maxLength={300} placeholder="Alasan pembatalan" aria-label="Alasan pembatalan" className="h-10 w-60" /><ConfirmSubmit variant="danger" message="Batalkan dokumen ini?">Batalkan</ConfirmSubmit></form>
           </div>
+        )}
+      </Card>
+
+
+      <Card>
+        <CardHeader title="Penugasan" description="PPK dan PPBJ (pereviu) yang menangani dokumen ini. PPBJ wajib ditentukan sebelum diajukan." />
+        {editable ? (
+          <form action={setAssigneesAction} className="no-print grid gap-4 p-5 sm:grid-cols-2">
+            <input type="hidden" name="docId" value={id} />
+            <Field label="PPK" htmlFor="as-ppk"><Select id="as-ppk" name="ppk" defaultValue={doc.assigned_ppk_id ?? ""}><option value="">— Belum ditentukan —</option>{ppkOpts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</Select></Field>
+            <Field label="PPBJ (pereviu)" htmlFor="as-ppbj"><Select id="as-ppbj" name="ppbj" defaultValue={doc.assigned_ppbj_id ?? ""}><option value="">— Belum ditentukan —</option>{ppbjOpts.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</Select></Field>
+            {(ppkOpts.length === 0 || ppbjOpts.length === 0) && <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 sm:col-span-2">Daftar {[ppkOpts.length === 0 && "PPK", ppbjOpts.length === 0 && "PPBJ"].filter(Boolean).join(" dan ")} kosong: belum ada pengguna aktif dengan peran tersebut, atau migrasi database 0018 belum dijalankan.</p>}
+            <div className="sm:col-span-2"><SubmitButton variant="outline" pendingText="Menyimpan...">Simpan penugasan</SubmitButton></div>
+          </form>
+        ) : (
+          <dl className="grid gap-x-6 gap-y-3 p-5 sm:grid-cols-2">
+            <div><dt className="text-xs font-medium uppercase tracking-wide text-slate-500">PPK</dt><dd className="mt-0.5 text-sm text-slate-900">{nameOf(doc.assigned_ppk_id)}</dd></div>
+            <div><dt className="text-xs font-medium uppercase tracking-wide text-slate-500">PPBJ (pereviu)</dt><dd className="mt-0.5 text-sm text-slate-900">{nameOf(doc.assigned_ppbj_id)}</dd></div>
+          </dl>
         )}
       </Card>
 

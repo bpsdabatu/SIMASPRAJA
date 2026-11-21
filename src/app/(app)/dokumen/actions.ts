@@ -52,7 +52,24 @@ const simple = (rpc: string, perm: string | string[], ok: string, withReason = f
   return runAction(detail(id), ok, async () => supabase.rpc(rpc, args));
 };
 
-export const submitDocumentAction = async (fd: FormData) => simple("submit_document", [...DOC_AUTHOR_PERMISSIONS], "Dokumen diajukan.")(fd);
+export async function submitDocumentAction(fd: FormData): Promise<void> {
+  await requireAnyModule([...DOC_AUTHOR_PERMISSIONS]);
+  const id = docId(fd);
+  const supabase = await userClient();
+  // Tanpa PPBJ pereviu, dokumen tidak akan pernah dapat direviu: tolak sejak awal dengan petunjuk jelas.
+  const { data: d } = await supabase.from("procurement_documents").select("assigned_ppbj_id").eq("id", id).maybeSingle();
+  if (d && !d.assigned_ppbj_id) flashRedirect(detail(id), { err: "Tentukan PPBJ (pereviu) pada bagian Penugasan sebelum mengajukan dokumen." });
+  return runAction(detail(id), "Dokumen diajukan.", async () => supabase.rpc("submit_document", { p_doc: id }));
+}
+
+export async function setAssigneesAction(fd: FormData): Promise<void> {
+  await requireAnyModule([...DOC_AUTHOR_PERMISSIONS]);
+  const id = docId(fd);
+  const supabase = await userClient();
+  return runAction(detail(id), "Penugasan disimpan.", async () =>
+    supabase.rpc("set_document_assignees", { p_doc: id, p_ppk: uuidOrNull(fd, "ppk"), p_ppbj: uuidOrNull(fd, "ppbj") }),
+  );
+}
 export const completeReviewAction = async (fd: FormData) => simple("complete_review", "document.review", "Reviu diselesaikan.")(fd);
 export const returnDocumentAction = async (fd: FormData) => simple("return_document", "document.view", "Dokumen dikembalikan untuk perbaikan.", true)(fd);
 export const cancelDocumentAction = async (fd: FormData) => simple("cancel_document", [...DOC_AUTHOR_PERMISSIONS], "Dokumen dibatalkan.", true)(fd);

@@ -56,7 +56,8 @@ export default async function DokumenPage({ searchParams }: { searchParams: Prom
                 <Field label="Judul" htmlFor="title" className="sm:col-span-2"><Input id="title" name="title" required maxLength={300} /></Field>
                 <Field label="PPK" htmlFor="ppk"><Select id="ppk" name="ppk" defaultValue=""><option value="">— Belum ditentukan —</option>{ppk.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</Select></Field>
                 <Field label="PPBJ (pereviu)" htmlFor="ppbj"><Select id="ppbj" name="ppbj" defaultValue=""><option value="">— Belum ditentukan —</option>{ppbj.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</Select></Field>
-                <p className="text-xs text-slate-500 sm:col-span-2">Isi dokumen diisi pada halaman detail setelah draf dibuat.</p>
+                {(ppk.length === 0 || ppbj.length === 0) && <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 sm:col-span-2">Belum ada pengguna aktif berperan {[ppk.length === 0 && "PPK", ppbj.length === 0 && "PPBJ"].filter(Boolean).join(" dan ")}. Minta admin menambahkannya di menu Pengguna & Peran; penugasan dapat ditentukan kemudian pada halaman detail dokumen.</p>}
+                <p className="text-xs text-slate-500 sm:col-span-2">Isi dokumen dan penugasan dapat dilengkapi/diubah pada halaman detail selama masih draf. PPBJ wajib ditentukan sebelum dokumen diajukan.</p>
                 <div className="sm:col-span-2"><SubmitButton pendingText="Membuat...">Buat draf</SubmitButton></div>
               </form>
             )}

@@ -12,6 +12,7 @@ import { logoutAction } from "@/app/actions";
 import { DigitalClock, GreetingBanner, resetGreeting } from "@/components/clock-greeting";
 import { LogoBadge } from "@/components/brand/logo";
 import { CommandPalette } from "@/components/command-palette";
+import { PrintSettingsMenu } from "@/components/print-settings";
 import type { IconName, NavItem } from "@/lib/nav";
 import { APP_NAME } from "@/lib/brand";
 import { cn } from "@/lib/utils";
@@ -220,6 +221,8 @@ export function AppShell({ user, context, items, badges: initialBadges = {}, chi
           <button onClick={() => setPalette(true)} className="flex h-10 w-10 items-center justify-center rounded-lg text-slate-700 hover:bg-slate-100 sm:hidden" aria-label="Cari menu"><Search size={19} aria-hidden /></button>
 
           <DigitalClock />
+
+          <PrintSettingsMenu iconOnly className="hidden sm:block" />
 
           <details className="group relative">
             <summary className="flex cursor-pointer list-none items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-slate-100 [&::-webkit-details-marker]:hidden">

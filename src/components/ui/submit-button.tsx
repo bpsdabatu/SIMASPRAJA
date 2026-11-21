@@ -1,5 +1,6 @@
 "use client";
 
+import { PrintSettingsMenu } from "@/components/print-settings";
 import * as React from "react";
 import { useFormStatus } from "react-dom";
 import { Loader2 } from "lucide-react";
@@ -36,8 +37,11 @@ export function ConfirmSubmit({
 
 export function PrintButton({ label = "Cetak" }: { label?: string }) {
   return (
-    <Button type="button" variant="outline" onClick={() => window.print()}>
-      {label}
-    </Button>
+    <span className="inline-flex items-center gap-2">
+      <PrintSettingsMenu iconOnly label="Pengaturan cetak" />
+      <Button type="button" variant="outline" onClick={() => window.print()}>
+        {label}
+      </Button>
+    </span>
   );
 }

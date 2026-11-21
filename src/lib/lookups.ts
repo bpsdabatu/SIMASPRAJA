@@ -12,6 +12,13 @@ async function codeName(sb: Sb, table: string): Promise<Opt[]> {
 
 /** Pengguna aktif berperan tertentu (membutuhkan hak baca user_roles: admin). Gagal -> daftar kosong. */
 export async function usersWithRole(sb: Sb, role: "pptk" | "ppk" | "ppbj"): Promise<Opt[]> {
+  // PPK/PPBJ untuk penugasan dokumen: fungsi database (migrasi 0018) agar PPTK/PPK penyusun juga dapat memilih. Belum ada -> cara lama (admin).
+  if (role !== "pptk") {
+    const r = await sb.rpc("assignable_users", { p_role: role });
+    if (!r.error && Array.isArray(r.data)) {
+      return (r.data as Array<{ id: string; full_name: string }>).map((u) => ({ id: u.id, label: u.full_name })).sort((a, b) => a.label.localeCompare(b.label, "id"));
+    }
+  }
   const { data } = await sb
     .from("user_roles")
     .select("user_id, profiles!inner(id, full_name, status)")

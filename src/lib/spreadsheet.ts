@@ -1,6 +1,8 @@
 import "server-only";
 import ExcelJS from "exceljs";
 import { parseCsv } from "@/lib/csv";
+import { getPrintSettings } from "@/lib/print-settings-server";
+import { MARGINS, PAPERS, type PrintSettings } from "@/lib/print-settings";
 
 /** Pembaca/penulis tabel untuk impor-ekspor Excel (.xlsx) dan CSV. Hanya dipakai di server. */
 
@@ -73,7 +75,8 @@ export interface SheetSpec {
 const ARIAL = "Arial";
 
 /** Membuat berkas .xlsx (font Arial, header tebal, angka sebagai angka). */
-export async function buildXlsx(sheets: SheetSpec[]): Promise<Buffer> {
+export async function buildXlsx(sheets: SheetSpec[], print?: PrintSettings): Promise<Buffer> {
+  const ps = print ?? (await getPrintSettings());
   const wb = new ExcelJS.Workbook();
   wb.creator = "SIMASPRAJA";
   wb.created = new Date();
@@ -99,6 +102,13 @@ export async function buildXlsx(sheets: SheetSpec[]): Promise<Buffer> {
       if (s.moneyCols?.includes(i)) col.numFmt = '#,##0.00;[Red]-#,##0.00';
     });
     ws.views = [{ state: "frozen", ySplit: headerRowNo }];
+    // Pengaturan halaman cetak (kertas, orientasi, margin) mengikuti Pengaturan Cetak; lebar muat 1 halaman, header berulang.
+    const mg = MARGINS[ps.margin];
+    ws.pageSetup = {
+      paperSize: PAPERS[ps.paper].xlsx, orientation: ps.orientation, fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+      margins: { left: mg.h / 25.4, right: mg.h / 25.4, top: mg.v / 25.4, bottom: mg.v / 25.4, header: 0.3, footer: 0.3 },
+      printTitlesRow: `${headerRowNo}:${headerRowNo}`,
+    };
   }
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
