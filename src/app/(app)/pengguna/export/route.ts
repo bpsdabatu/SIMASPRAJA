@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getSessionUser } from "@/lib/auth/session";
+import { loadUserRows } from "@/lib/user-rows";
 import { adminClient } from "@/lib/supabase/admin";
 import { loadTempPasswords } from "@/lib/auth/temp-credential";
 import { EVENT_LABEL, loadAccountHistory, loadAccountSummaries } from "@/lib/account-history";
@@ -16,10 +17,8 @@ export async function GET(req: NextRequest) {
   const user = await getSessionUser();
   if (!user || !user.permissions.has("users.manage")) return new NextResponse("Tidak berwenang", { status: 403 });
   const admin = adminClient();
-  const { data, error } = await admin.from("profiles").select("id, username, full_name, nip, position_title, status, last_login_at, must_change_password, user_roles(role_code)")
-    .eq("organization_id", user.organizationId).order("full_name").limit(2000);
-  if (error) return new NextResponse("Data tidak dapat dimuat", { status: 500 });
-  const rows = (data ?? []) as unknown as { id: string; username: string; full_name: string; nip: string | null; position_title: string | null; status: string; last_login_at: string | null; must_change_password: boolean; user_roles: { role_code: string }[] }[];
+  const { rows, error } = await loadUserRows(admin, { organizationId: user.organizationId, limit: 2000 });
+  if (error) { console.error("[pengguna/export]", error); return new NextResponse("Data tidak dapat dimuat", { status: 500 }); }
   const [temp, sums, hist] = await Promise.all([
     loadTempPasswords(rows.filter((r) => r.must_change_password).map((r) => r.id)),
     loadAccountSummaries(user.organizationId),

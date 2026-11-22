@@ -6,6 +6,7 @@ import { loadTempPasswords } from "@/lib/auth/temp-credential";
 import { EVENT_LABEL, loadAccountHistory, loadAccountSummaries } from "@/lib/account-history";
 import { requireModule } from "@/lib/auth/guard";
 import { userClient } from "@/lib/supabase/server";
+import { loadUserRows, type UserRow } from "@/lib/user-rows";
 import { ROLE_LABEL } from "@/lib/nav";
 import { formatDateTimeWIB } from "@/lib/format";
 import { Badge, Card, CardHeader } from "@/components/ui/card";
@@ -20,16 +21,14 @@ export const metadata: Metadata = { title: "Pengguna & Peran" };
 export const dynamic = "force-dynamic";
 const STATUS = { active: ["Aktif", "green"], suspended: ["Ditangguhkan", "amber"], disabled: ["Nonaktif", "slate"] } as const;
 
-interface Row { id: string; username: string; full_name: string; nip: string | null; position_title: string | null; status: keyof typeof STATUS; last_login_at: string | null; must_change_password: boolean; user_roles: { role_code: string }[] }
 
 export default async function PenggunaPage({ searchParams }: { searchParams: Promise<{ ok?: string; err?: string; u?: string; status?: string }> }) {
   const { user } = await requireModule("users.manage");
   const sp = await searchParams;
   const sb = await userClient();
-  const { data, error } = await sb.from("profiles").select("id, username, full_name, nip, position_title, status, last_login_at, must_change_password, user_roles(role_code)").order("full_name").limit(1000);
-  const allRows = (data ?? []) as unknown as Row[];
+  const { rows: allRows, error } = await loadUserRows(sb, { organizationId: user.organizationId });
   const statusFilter = sp.status && sp.status in STATUS ? sp.status : "";
-  const rows = statusFilter ? allRows.filter((r) => r.status === statusFilter) : allRows;
+  const rows = statusFilter ? allRows.filter((r: UserRow) => r.status === statusFilter) : allRows;
   const counts = { active: 0, suspended: 0, disabled: 0 } as Record<string, number>;
   for (const r of allRows) counts[r.status] = (counts[r.status] ?? 0) + 1;
   const [temp, sums, hist] = await Promise.all([
@@ -69,7 +68,7 @@ export default async function PenggunaPage({ searchParams }: { searchParams: Pro
 
       <Card>
         <CardHeader title={`Pengguna (${rows.length})`} description="Kata sandi yang sudah diganti pengguna sendiri tidak dapat dilihat (hanya tersimpan sebagai hash di Supabase Auth); gunakan Reset untuk membuat yang baru. Akun yang tidak diperlukan lagi: Nonaktifkan (data tetap utuh) atau Hapus (hanya bila belum dipakai pada data lain)." actions={<><form action="/pengguna" className="flex gap-2"><Select name="status" defaultValue={statusFilter} aria-label="Filter status akun" className="h-8 w-44 text-xs"><option value="">Semua ({allRows.length})</option><option value="active">Aktif ({counts.active})</option><option value="suspended">Ditangguhkan ({counts.suspended})</option><option value="disabled">Nonaktif ({counts.disabled})</option></Select><button className={buttonVariants({ variant: "outline", size: "sm" })}>Terapkan</button></form><a href="/pengguna/export?format=xlsx" className={buttonVariants({ variant: "outline", size: "sm" })}><Download size={14} aria-hidden /> Excel</a><a href="/pengguna/export?format=csv" className={buttonVariants({ variant: "outline", size: "sm" })}><Download size={14} aria-hidden /> CSV</a></>} />
-        {error ? <EmptyState title="Data tidak dapat dimuat">Muat ulang halaman.</EmptyState> : rows.length === 0 ? <EmptyState title="Belum ada pengguna" /> : (
+        {error ? <EmptyState title="Data tidak dapat dimuat">Muat ulang halaman. Bila tetap gagal, sampaikan pesan berikut kepada pengembang: <code className="break-all rounded bg-slate-100 px-1.5 py-0.5 text-xs">{error}</code></EmptyState> : rows.length === 0 ? <EmptyState title="Belum ada pengguna" /> : (
           <TableWrap>
             <table className="table-base">
               <thead><tr><th>Pengguna</th><th>Aksi</th><th>Username</th><th>Peran</th><th>Status</th><th>Kata sandi sementara</th><th>Dibuat</th><th>Reset terakhir</th><th>Terakhir masuk</th></tr></thead>

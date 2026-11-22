@@ -7,6 +7,7 @@ import { requireModule } from "@/lib/auth/guard";
 import { loadTempPasswords } from "@/lib/auth/temp-credential";
 import { EVENT_LABEL, loadAccountHistory } from "@/lib/account-history";
 import { userClient } from "@/lib/supabase/server";
+import { loadUserRows } from "@/lib/user-rows";
 import { isUuid } from "@/lib/action-utils";
 import { ROLE_LABEL } from "@/lib/nav";
 import { formatDateTimeWIB } from "@/lib/format";
@@ -22,7 +23,6 @@ export const metadata: Metadata = { title: "Kelola Pengguna" };
 export const dynamic = "force-dynamic";
 const STATUS = { active: ["Aktif", "green"], suspended: ["Ditangguhkan", "amber"], disabled: ["Nonaktif", "slate"] } as const;
 
-interface Row { id: string; username: string; full_name: string; nip: string | null; position_title: string | null; status: keyof typeof STATUS; last_login_at: string | null; must_change_password: boolean; user_roles: { role_code: string }[] }
 
 /** Halaman khusus untuk mengubah, menonaktifkan, mereset, dan menghapus satu akun (Admin). */
 export default async function KelolaPenggunaPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ ok?: string; err?: string }> }) {
@@ -31,9 +31,10 @@ export default async function KelolaPenggunaPage({ params, searchParams }: { par
   const sp = await searchParams;
   if (!isUuid(id)) notFound();
   const sb = await userClient();
-  const { data } = await sb.from("profiles").select("id, username, full_name, nip, position_title, status, last_login_at, must_change_password, user_roles(role_code)").eq("id", id).maybeSingle();
-  if (!data) notFound();
-  const r = data as unknown as Row;
+  const { rows: found, error: loadErr } = await loadUserRows(sb, { id });
+  if (loadErr) return <div className="mx-auto max-w-4xl space-y-4"><Link href="/pengguna" className={buttonVariants({ variant: "outline", size: "sm" })}><ArrowLeft size={14} aria-hidden /> Kembali</Link><p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800">Data akun tidak dapat dimuat: <code className="break-all">{loadErr}</code></p></div>;
+  const r = found[0];
+  if (!r) notFound();
   const self = r.id === user.id;
   const roles = r.user_roles.map((x) => x.role_code);
   const [label, tone] = STATUS[r.status] ?? ["—", "slate"];
