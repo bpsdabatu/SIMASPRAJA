@@ -22,3 +22,21 @@ export const DOC_STATUS: Record<string, { label: string; tone: Tone }> = {
   archived: { label: "Arsip", tone: "slate" },
   cancelled: { label: "Dibatalkan", tone: "slate" },
 };
+
+/** Label status menurut jenis dokumen (tujuan nota dinas berbeda: PPK atau PPBJ). */
+const DOC_STATUS_BY_TYPE: Record<string, Record<string, { label: string; tone?: Tone }>> = {
+  nota_dinas_pptk: {
+    submitted: { label: "Diajukan ke PPK" }, resubmitted: { label: "Diajukan ulang ke PPK" },
+    returned_for_correction: { label: "Dikembalikan PPK" }, issued: { label: "Diterima PPK", tone: "green" },
+  },
+  nota_dinas_ppk: {
+    submitted: { label: "Diajukan ke PPBJ" }, resubmitted: { label: "Diajukan ulang ke PPBJ" },
+    returned_for_correction: { label: "Dikembalikan" }, issued: { label: "Diterima PPBJ", tone: "green" },
+  },
+  dpp: { submitted: { label: "Diajukan ke PPBJ" }, resubmitted: { label: "Diajukan ulang ke PPBJ" }, issued: { label: "BA Reviu terbit", tone: "green" } },
+};
+export function docStatus(type: string, status: string): { label: string; tone: Tone } {
+  const base = DOC_STATUS[status] ?? { label: status, tone: "slate" as Tone };
+  const o = DOC_STATUS_BY_TYPE[type]?.[status];
+  return o ? { label: o.label, tone: o.tone ?? base.tone } : base;
+}

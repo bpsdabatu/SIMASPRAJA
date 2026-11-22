@@ -4,7 +4,7 @@ import { getSessionUser } from "@/lib/auth/session";
 import { csvResponseHeaders, toCsv } from "@/lib/csv";
 import { buildXlsx, xlsxHeaders } from "@/lib/spreadsheet";
 import { DOC_TYPES } from "@/lib/documents";
-import { DOC_STATUS } from "@/lib/status";
+import { DOC_STATUS, docStatus } from "@/lib/status";
 import { formatDateTimeWIB } from "@/lib/format";
 import { REF_KINDS, type DocItem } from "@/lib/document-items";
 
@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
   const header = ["No", "Judul", "Jenis", "Nomor Dokumen", "Tanggal Dokumen", "Perihal / Paket", "HPS (Rp)", "Status", "Dibuat", "Alasan Pembatalan"];
   const body = rows.map((d, i) => {
     const c = latest.get(d.id) ?? {};
-    return [i + 1, d.title, DOC_TYPES[d.doc_type]?.label ?? d.doc_type, c.nomor ?? "", c.tanggal ?? "", c.perihal ?? "", c.hps ?? "", DOC_STATUS[d.status]?.label ?? d.status, formatDateTimeWIB(d.created_at), d.cancel_reason ?? ""];
+    return [i + 1, d.title, DOC_TYPES[d.doc_type]?.label ?? d.doc_type, c.nomor ?? "", c.tanggal ?? "", c.perihal ?? "", c.hps ?? "", docStatus(d.doc_type, d.status).label, formatDateTimeWIB(d.created_at), d.cancel_reason ?? ""];
   });
   const base = `dokumen-pengadaan${status ? `-${status}` : ""}`;
   if (sp.get("format") === "csv") return new NextResponse(toCsv([header, ...body]), { headers: csvResponseHeaders(`${base}.csv`) });

@@ -7,13 +7,22 @@ export interface DocField {
   /** "computed": dihitung server (tidak diisi manual); "editor": diisi di editor rincian barang/jasa. */
   render?: "computed" | "editor";
 }
-export interface DocType { label: string; creatorRoles: string[]; fields: DocField[]; hasItems?: boolean; basis?: string }
+export interface DocType {
+  label: string; creatorRoles: string[]; fields: DocField[]; hasItems?: boolean; basis?: string;
+  /** Penerima/tujuan dokumen: "ppk" (Nota Dinas PPTK) atau "ppbj" (Nota Dinas PPK, DPP). */
+  recipient?: "ppk" | "ppbj";
+  /** Izin yang diperlukan untuk menyusun jenis dokumen ini. */
+  createPermission?: string;
+  /** Dokumen ini TIDAK dibuat langsung, melainkan diturunkan dari dokumen lain (alur: Nota PPTK -> DPP -> Nota PPK). */
+  createdFrom?: "nota_dinas_pptk" | "dpp";
+}
 export type DocContent = Record<string, unknown> & { items?: DocItem[] };
 
 const BASE: DocField[] = [
   { key: "nomor", label: "Nomor" },
   { key: "tanggal", label: "Tanggal", kind: "date" },
   { key: "perihal", label: "Perihal", required: true },
+  { key: "kode_rup", label: "Kode RUP (SiRUP)" },
   { key: "isi", label: "Isi / uraian", kind: "textarea" },
   { key: "ppn_persen", label: "Tarif PPN (%)", render: "editor" },
   { key: "hps", label: "Perkiraan biaya (termasuk PPN)", render: "computed" },
@@ -30,13 +39,23 @@ const JENIS_KONTRAK = ["Bukti pembelian / kuitansi", "Surat Pesanan (e-purchasin
  * rancangan kontrak, serta uang muka/jaminan/garansi/penyesuaian harga (Perpres 16/2018 jo. Perpres 12/2021 jo. Perpres 46/2025, bab persiapan
  * pengadaan melalui penyedia). Bidang di bawah mengikuti informasi minimal tersebut; templat resmi instansi dapat menggantikannya kemudian.
  */
-export const DPP_BASIS = "Perpres 16/2018 sebagaimana diubah terakhir dengan Perpres 46/2025 (persiapan pengadaan melalui penyedia: spesifikasi teknis/KAK, HPS, rancangan kontrak, uang muka dan jaminan).";
+export const DPP_BASIS = "Perpres 16/2018 sebagaimana diubah terakhir dengan Perpres 46/2025: persiapan pengadaan melalui penyedia (spesifikasi teknis/KAK, HPS, rancangan kontrak, uang muka dan jaminan) dilakukan dan DITETAPKAN oleh PPK; PPTK membantu menyusun. DPP kemudian direviu PPBJ bersama PPK.";
 
 export const DOC_TYPES: Record<string, DocType> = {
-  nota_dinas_pptk: { label: "Nota Dinas PPTK", creatorRoles: ["pptk"], fields: BASE, hasItems: true },
-  nota_dinas_ppk: { label: "Nota Dinas PPK", creatorRoles: ["ppk"], fields: BASE, hasItems: true },
+  nota_dinas_pptk: {
+    label: "Nota Dinas PPTK kepada PPK", creatorRoles: ["pptk"], createPermission: "document.create_pptk", recipient: "ppk", fields: BASE, hasItems: true,
+    basis: "PPTK menyampaikan usulan kebutuhan (rincian barang/jasa, referensi harga, bahan spesifikasi/KAK) kepada PPK. PPK menerima atau mengembalikan, lalu menyusun dan menetapkan DPP.",
+  },
+  nota_dinas_ppk: {
+    label: "Nota Dinas PPK kepada PPBJ", creatorRoles: ["ppk"], createPermission: "document.create_ppk", recipient: "ppbj", createdFrom: "dpp",
+    basis: "PPK menyampaikan permintaan reviu dan persiapan pemilihan penyedia kepada PPBJ dengan melampirkan DPP.",
+    fields: [
+      { key: "nomor", label: "Nomor" }, { key: "tanggal", label: "Tanggal", kind: "date" }, { key: "perihal", label: "Perihal", required: true },
+      { key: "isi", label: "Isi / permohonan", kind: "textarea" }, { key: "lampiran", label: "Lampiran", kind: "textarea" },
+    ],
+  },
   dpp: {
-    label: "Dokumen Persiapan Pengadaan (DPP)", creatorRoles: ["pptk"], hasItems: true, basis: DPP_BASIS,
+    label: "Dokumen Persiapan Pengadaan (DPP)", creatorRoles: ["ppk"], createPermission: "document.create_ppk", recipient: "ppbj", createdFrom: "nota_dinas_pptk", hasItems: true, basis: DPP_BASIS,
     fields: [
       { section: "A. Identitas paket pengadaan", key: "nomor", label: "Nomor dokumen" },
       { key: "tanggal", label: "Tanggal", kind: "date" },

@@ -103,7 +103,7 @@ export default async function PenggunaPage({ searchParams }: { searchParams: Pro
                       <td className="text-right">
                         {(
                           <details className="relative text-left">
-                            <summary className="ml-auto inline-flex h-8 cursor-pointer list-none items-center rounded-lg bg-navy-50 px-3 text-xs font-semibold text-navy-700 hover:bg-navy-100 [&::-webkit-details-marker]:hidden">Kelola</summary>
+                            <summary className="ml-auto inline-flex h-8 cursor-pointer list-none items-center rounded-lg bg-navy-50 px-3 text-xs font-semibold text-navy-700 hover:bg-navy-100 [&::-webkit-details-marker]:hidden">Kelola / Hapus</summary>
                             <div className="absolute right-0 z-20 mt-2 w-[min(92vw,24rem)] space-y-4 rounded-xl border border-slate-200 bg-white p-4 shadow-lift">
                               <form action={updateUserAction} className="grid gap-2 sm:grid-cols-2">
                                 <input type="hidden" name="userId" value={r.id} />
