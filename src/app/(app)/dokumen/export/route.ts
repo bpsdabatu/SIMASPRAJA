@@ -6,6 +6,7 @@ import { buildXlsx, xlsxHeaders } from "@/lib/spreadsheet";
 import { DOC_TYPES } from "@/lib/documents";
 import { DOC_STATUS } from "@/lib/status";
 import { formatDateTimeWIB } from "@/lib/format";
+import { REF_KINDS, type DocItem } from "@/lib/document-items";
 
 export const dynamic = "force-dynamic";
 
@@ -23,10 +24,10 @@ export async function GET(req: NextRequest) {
   const rows = data ?? [];
   // Isi revisi terbaru (nomor, tanggal, perihal) agar keluaran memuat data dokumen, bukan hanya judul.
   const ids = rows.map((r) => r.id);
-  const latest = new Map<string, Record<string, string>>();
+  const latest = new Map<string, Record<string, string> & { items?: DocItem[] }>();
   if (ids.length > 0) {
     const { data: revs } = await sb.from("document_revisions").select("document_id, revision_no, content").in("document_id", ids).order("revision_no", { ascending: false });
-    for (const r of revs ?? []) if (!latest.has(r.document_id)) latest.set(r.document_id, (r.content ?? {}) as Record<string, string>);
+    for (const r of revs ?? []) if (!latest.has(r.document_id)) latest.set(r.document_id, (r.content ?? {}) as Record<string, string> & { items?: DocItem[] });
   }
   const header = ["No", "Judul", "Jenis", "Nomor Dokumen", "Tanggal Dokumen", "Perihal / Paket", "HPS (Rp)", "Status", "Dibuat", "Alasan Pembatalan"];
   const body = rows.map((d, i) => {
@@ -35,6 +36,17 @@ export async function GET(req: NextRequest) {
   });
   const base = `dokumen-pengadaan${status ? `-${status}` : ""}`;
   if (sp.get("format") === "csv") return new NextResponse(toCsv([header, ...body]), { headers: csvResponseHeaders(`${base}.csv`) });
-  const buf = await buildXlsx([{ name: "Dokumen Pengadaan", title: ["Daftar Dokumen Pengadaan"], header, rows: body, widths: [6, 44, 30, 22, 16, 40, 18, 24, 22, 30], moneyCols: [] }]);
+  // Lembar rincian: satu baris per barang/jasa (volume, harga, jumlah, dan referensi harga) untuk seluruh dokumen pada daftar.
+  const itemHeader = ["Dokumen", "Jenis", "No", "Barang/Jasa", "Spesifikasi", "Volume", "Satuan", "Harga Satuan (Rp)", "Jumlah (Rp)", "Sumber Referensi", "Tautan Referensi", "Tanggal Akses", "Harga Referensi (Rp)", "Catatan Referensi"];
+  const itemRows: (string | number)[][] = [];
+  for (const d of rows) {
+    const its = latest.get(d.id)?.items;
+    if (!Array.isArray(its)) continue;
+    its.forEach((it, i) => itemRows.push([d.title, DOC_TYPES[d.doc_type]?.label ?? d.doc_type, i + 1, it.nama, it.spesifikasi, it.volume, it.satuan, it.harga, it.jumlah, REF_KINDS[it.refKind] ?? "", it.refUrl, it.refTanggal, it.refHarga ?? "", it.refCatatan]));
+  }
+  const buf = await buildXlsx([
+    { name: "Dokumen Pengadaan", title: ["Daftar Dokumen Pengadaan"], header, rows: body, widths: [6, 44, 30, 22, 16, 40, 18, 24, 22, 30], moneyCols: [] },
+    { name: "Rincian Barang-Jasa", title: ["Rincian Kebutuhan Barang/Jasa dan Referensi Harga"], header: itemHeader, rows: itemRows, widths: [36, 26, 6, 34, 36, 10, 12, 18, 18, 26, 46, 14, 18, 30], moneyCols: [7, 8, 12] },
+  ]);
   return new NextResponse(new Uint8Array(buf), { headers: xlsxHeaders(`${base}.xlsx`) });
 }

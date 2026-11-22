@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -6,7 +7,11 @@ import { requireModule } from "@/lib/auth/guard";
 import { userClient } from "@/lib/supabase/server";
 import { getOrganizationName, usersWithRole } from "@/lib/lookups";
 import { isUuid } from "@/lib/action-utils";
-import { DOC_TYPES } from "@/lib/documents";
+import { DOC_TYPES, type DocField } from "@/lib/documents";
+import type { DocItem } from "@/lib/document-items";
+import { formatRupiah } from "@/lib/format";
+import { ItemsEditor } from "../items-editor";
+import { ItemsView } from "../items-view";
 import { DOC_STATUS } from "@/lib/status";
 import { formatDateTimeWIB } from "@/lib/format";
 import { Badge, Card, CardHeader } from "@/components/ui/card";
@@ -26,12 +31,12 @@ interface Finding { id: string; finding: string; required_correction: string | n
 interface Review { id: string; outcome: string | null; reviewed_at: string | null; created_at: string; review_findings: Finding[]; review_minutes: { minutes_no: string | null; issued_at: string | null } | { minutes_no: string | null; issued_at: string | null }[] | null }
 
 export default async function DokumenDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ ok?: string; err?: string }> }) {
-  const { user } = await requireModule("document.view");
+  const { user, context } = await requireModule("document.view");
   const { id } = await params;
   const sp = await searchParams;
   if (!isUuid(id)) notFound();
   const sb = await userClient();
-  const { data: doc } = await sb.from("procurement_documents").select("id, doc_type, title, status, cancel_reason, created_by, assigned_ppk_id, assigned_ppbj_id, created_at").eq("id", id).maybeSingle();
+  const { data: doc } = await sb.from("procurement_documents").select("id, doc_type, title, status, cancel_reason, created_by, assigned_ppk_id, assigned_ppbj_id, created_at, budget_item_id").eq("id", id).maybeSingle();
   if (!doc) notFound();
   const [{ data: revs }, { data: reviewsRaw }, { data: events }, org] = await Promise.all([
     sb.from("document_revisions").select("revision_no, content, change_note, created_at").eq("document_id", id).order("revision_no", { ascending: false }),
@@ -41,7 +46,12 @@ export default async function DokumenDetail({ params, searchParams }: { params: 
   ]);
   const type = DOC_TYPES[doc.doc_type];
   const latest = revs?.[0];
-  const content = (latest?.content ?? {}) as Record<string, string>;
+  const content = (latest?.content ?? {}) as Record<string, string> & { items?: DocItem[] };
+  const docItems: DocItem[] = Array.isArray(content.items) ? content.items : [];
+  const { data: paguRow } = doc.budget_item_id
+    ? await sb.from("budget_item_versions").select("pagu").eq("budget_item_id", doc.budget_item_id).eq("budget_version_id", context.versionId).maybeSingle()
+    : { data: null };
+  const pagu = paguRow ? Number(paguRow.pagu) : null;
   const reviews = (reviewsRaw ?? []) as unknown as Review[];
   const openReview = reviews.find((r) => r.outcome === null);
   const st = DOC_STATUS[doc.status] ?? { label: doc.status, tone: "slate" as const };
@@ -72,24 +82,44 @@ export default async function DokumenDetail({ params, searchParams }: { params: 
           <form action={saveRevisionAction} className="grid gap-4 p-5 sm:grid-cols-2">
             <input type="hidden" name="docId" value={id} /><input type="hidden" name="type" value={doc.doc_type} />
             <Field label="Judul" htmlFor="title" className="sm:col-span-2"><Input id="title" name="title" defaultValue={doc.title} maxLength={300} /></Field>
-            {type?.fields.map((f) => (
-              <Field key={f.key} label={f.label} htmlFor={`f_${f.key}`} className={f.kind === "textarea" ? "sm:col-span-2" : undefined}>
-                {f.kind === "textarea" ? <Textarea id={`f_${f.key}`} name={`f_${f.key}`} rows={5} defaultValue={content[f.key] ?? ""} />
-                  : <Input id={`f_${f.key}`} name={`f_${f.key}`} type={f.kind === "date" ? "date" : "text"} required={f.required} defaultValue={content[f.key] ?? ""} />}
-              </Field>
-            ))}
+            {type?.basis && <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 sm:col-span-2">Dasar penyusunan: {type.basis} Templat resmi instansi dapat menggantikan susunan ini.</p>}
+            {type?.fields.map((f) => {
+              if (f.render === "computed") return null;
+              if (f.render === "editor") return (<div key={f.key} className="contents">{f.section && <h3 className="border-b border-slate-200 pb-1 text-sm font-semibold text-navy-800 sm:col-span-2">{f.section}</h3>}<ItemsEditor defaultItems={docItems} defaultPpn={content.ppn_persen ?? ""} pagu={pagu} legacyHps={docItems.length === 0 && content.hps ? content.hps : undefined} /></div>);
+              return (
+                <div key={f.key} className="contents">
+                  {f.section && <h3 className="border-b border-slate-200 pb-1 pt-2 text-sm font-semibold text-navy-800 sm:col-span-2">{f.section}</h3>}
+                  <Field label={f.label} htmlFor={`f_${f.key}`} hint={f.hint} className={f.kind === "textarea" ? "sm:col-span-2" : undefined}>
+                    {f.kind === "textarea" ? <Textarea id={`f_${f.key}`} name={`f_${f.key}`} rows={4} defaultValue={content[f.key] ?? ""} />
+                      : f.kind === "select" ? <Select id={`f_${f.key}`} name={`f_${f.key}`} defaultValue={content[f.key] ?? ""}><option value="">— Pilih —</option>{(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}</Select>
+                      : <Input id={`f_${f.key}`} name={`f_${f.key}`} type={f.kind === "date" ? "date" : "text"} required={f.required} defaultValue={content[f.key] ?? ""} />}
+                  </Field>
+                </div>
+              );
+            })}
             <Field label="Catatan perubahan" htmlFor="note" className="sm:col-span-2"><Input id="note" name="note" maxLength={300} placeholder="mis. HPS dilampirkan" /></Field>
             <div className="sm:col-span-2"><SubmitButton pendingText="Menyimpan...">Simpan sebagai revisi baru</SubmitButton></div>
           </form>
         ) : (
-          <dl className="grid gap-x-6 gap-y-4 p-5 sm:grid-cols-2">
-            {type?.fields.map((f) => (
-              <div key={f.key} className={f.kind === "textarea" ? "sm:col-span-2" : undefined}>
-                <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">{f.label}</dt>
-                <dd className="mt-0.5 whitespace-pre-wrap text-sm text-slate-900">{content[f.key] || "—"}</dd>
-              </div>
-            ))}
-          </dl>
+          <div>
+            {type?.basis && <p className="px-5 pt-4 text-xs text-slate-500">Dasar penyusunan: {type.basis}</p>}
+            <dl className="grid gap-x-6 gap-y-4 p-5 sm:grid-cols-2">
+              {type?.fields.map((f: DocField) => {
+                if (f.render === "editor") return null;
+                if (f.render === "computed") return docItems.length === 0 && content[f.key] ? <div key={f.key}><dt className="text-xs font-medium uppercase tracking-wide text-slate-500">{f.label}</dt><dd className="mt-0.5 text-sm text-slate-900">{Number.isFinite(Number(content[f.key])) ? formatRupiah(content[f.key]) : content[f.key]}</dd></div> : null;
+                return (
+                  <Fragment key={f.key}>
+                    {f.section && <h3 className="border-b border-slate-200 pb-1 pt-2 text-sm font-semibold text-navy-800 sm:col-span-2">{f.section}</h3>}
+                    <div className={f.kind === "textarea" ? "sm:col-span-2" : undefined}>
+                      <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">{f.label}</dt>
+                      <dd className="mt-0.5 whitespace-pre-wrap text-sm text-slate-900">{content[f.key] || "—"}</dd>
+                    </div>
+                  </Fragment>
+                );
+              })}
+            </dl>
+            {type?.hasItems && <div className="border-t border-slate-100"><ItemsView items={docItems} ppnPersen={content.ppn_persen} pagu={pagu} /></div>}
+          </div>
         )}
         {(owner && editable || owner && doc.status === "draft") && (
           <div className="no-print flex flex-wrap gap-2 border-t border-slate-100 p-5">

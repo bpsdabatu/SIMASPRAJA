@@ -4,7 +4,7 @@ import { requireAnyModule, requireModule } from "@/lib/auth/guard";
 import { userClient } from "@/lib/supabase/server";
 import { friendlyError, isUuid, optStr, runAction, str, uuidOrNull } from "@/lib/action-utils";
 import { flashRedirect } from "@/lib/flash";
-import { contentFrom, DOC_AUTHOR_PERMISSIONS, DOC_TYPES } from "@/lib/documents";
+import { DOC_AUTHOR_PERMISSIONS, DOC_TYPES, parseDocContent } from "@/lib/documents";
 
 const LIST = "/dokumen";
 const detail = (id: string) => `/dokumen/${id}`;
@@ -21,11 +21,13 @@ export async function createDocumentAction(fd: FormData): Promise<void> {
   const title = str(fd, "title", 300);
   if (!DOC_TYPES[type] || DOC_TYPES[type]!.creatorRoles.length === 0) flashRedirect(LIST, { err: "Jenis dokumen tidak valid." });
   if (!isUuid(item)) flashRedirect(LIST, { err: "Pilih butir anggaran." });
+  const parsed = parseDocContent(fd, type);
+  if (parsed.errors.length) flashRedirect(LIST, { err: parsed.errors[0]! });
   const supabase = await userClient();
   let id = "", msg = "";
   try {
     const { data, error } = await supabase.rpc("create_document", {
-      p_type: type, p_item: item, p_title: title, p_ppk: uuidOrNull(fd, "ppk"), p_ppbj: uuidOrNull(fd, "ppbj"), p_content: contentFrom(fd, type),
+      p_type: type, p_item: item, p_title: title, p_ppk: uuidOrNull(fd, "ppk"), p_ppbj: uuidOrNull(fd, "ppbj"), p_content: parsed.content,
     });
     if (error) msg = friendlyError(error); else id = String(data);
   } catch { msg = "Terjadi kesalahan pada sistem. Silakan coba lagi."; }
@@ -37,9 +39,11 @@ export async function saveRevisionAction(fd: FormData): Promise<void> {
   await requireAnyModule([...DOC_AUTHOR_PERMISSIONS]);
   const id = docId(fd);
   const type = str(fd, "type", 40);
+  const parsed = parseDocContent(fd, type);
+  if (parsed.errors.length) flashRedirect(detail(id), { err: parsed.errors.slice(0, 3).join(" ") + (parsed.errors.length > 3 ? ` (+${parsed.errors.length - 3} kesalahan lain)` : "") });
   const supabase = await userClient();
   return runAction(detail(id), "Revisi baru disimpan.", async () =>
-    supabase.rpc("save_document_revision", { p_doc: id, p_title: optStr(fd, "title", 300), p_content: contentFrom(fd, type), p_note: optStr(fd, "note", 300) }),
+    supabase.rpc("save_document_revision", { p_doc: id, p_title: optStr(fd, "title", 300), p_content: parsed.content, p_note: optStr(fd, "note", 300) }),
   );
 }
 
