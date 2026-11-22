@@ -6,7 +6,7 @@ import { adminClient } from "@/lib/supabase/admin";
  * akun ditangguhkan/diaktifkan, peran diubah. Tidak pernah menyimpan kata sandi. Hanya service role yang dapat membaca/menulis.
  * Pencatatan bersifat best-effort: kegagalan hanya dicatat di log server dan tidak membatalkan tindakan akun.
  */
-export type AccountEventCode = "DIBUAT" | "SANDI_DIRESET" | "SANDI_DIGANTI" | "DITANGGUHKAN" | "DIAKTIFKAN" | "PERAN_DIUBAH" | "DIPULIHKAN";
+export type AccountEventCode = "DIBUAT" | "SANDI_DIRESET" | "SANDI_DIGANTI" | "DITANGGUHKAN" | "DIAKTIFKAN" | "PERAN_DIUBAH" | "DIPULIHKAN" | "DATA_DIUBAH" | "DINONAKTIFKAN" | "DIHAPUS";
 
 export const EVENT_LABEL: Record<AccountEventCode, string> = {
   DIBUAT: "Akun dibuat",
@@ -16,6 +16,9 @@ export const EVENT_LABEL: Record<AccountEventCode, string> = {
   DIAKTIFKAN: "Akun diaktifkan",
   PERAN_DIUBAH: "Peran diubah",
   DIPULIHKAN: "Akun dipulihkan (skrip admin)",
+  DATA_DIUBAH: "Data akun diubah",
+  DINONAKTIFKAN: "Akun dinonaktifkan",
+  DIHAPUS: "Akun dihapus",
 };
 
 export interface AccountEventInput {

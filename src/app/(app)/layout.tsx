@@ -16,7 +16,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <>
-    <style id={PRINT_STYLE_ID} dangerouslySetInnerHTML={{ __html: printCss }} />
+    <style id={PRINT_STYLE_ID}>{printCss}</style>
     <AppShell
       user={{ fullName: user.fullName, username: user.username, roleLabels: user.roles.map((r) => ROLE_LABEL[r] ?? r) }}
       context={{ year: context.year, stageLabel: STAGE_LABEL[context.stage] }}
