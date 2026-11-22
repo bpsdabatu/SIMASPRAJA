@@ -4,7 +4,7 @@ import { requireAnyModule, requireModule } from "@/lib/auth/guard";
 import { userClient } from "@/lib/supabase/server";
 import { friendlyError, isUuid, optStr, runAction, str, uuidOrNull } from "@/lib/action-utils";
 import { flashRedirect } from "@/lib/flash";
-import { DOC_AUTHOR_PERMISSIONS, DOC_TYPES, parseDocContent } from "@/lib/documents";
+import { contentFromRup, DOC_AUTHOR_PERMISSIONS, DOC_TYPES, parseDocContent, type RupSource } from "@/lib/documents";
 
 const LIST = "/dokumen";
 const detail = (id: string) => `/dokumen/${id}`;
@@ -24,6 +24,12 @@ export async function createDocumentAction(fd: FormData): Promise<void> {
   const parsed = parseDocContent(fd, type);
   if (parsed.errors.length) flashRedirect(LIST, { err: parsed.errors[0]! });
   const supabase = await userClient();
+  // Pilihan paket dari RUP (SiRUP): isi awal DPP diambil dari data RUP yang tersimpan (bukan dari nilai kiriman browser).
+  const rupId = str(fd, "rupId", 40);
+  if (type === "dpp" && isUuid(rupId)) {
+    const { data: rup } = await supabase.from("rup_references").select("rup_code, package_name, pagu, jenis_pengadaan, metode_pemilihan, cara_pengadaan, sumber_dana, lokasi").eq("id", rupId).maybeSingle();
+    if (rup) parsed.content = { ...parsed.content, ...contentFromRup(rup as RupSource) };
+  }
   let id = "", msg = "";
   try {
     const { data, error } = await supabase.rpc("create_document", {
@@ -42,9 +48,16 @@ export async function saveRevisionAction(fd: FormData): Promise<void> {
   const parsed = parseDocContent(fd, type);
   if (parsed.errors.length) flashRedirect(detail(id), { err: parsed.errors.slice(0, 3).join(" ") + (parsed.errors.length > 3 ? ` (+${parsed.errors.length - 3} kesalahan lain)` : "") });
   const supabase = await userClient();
-  return runAction(detail(id), "Revisi baru disimpan.", async () =>
-    supabase.rpc("save_document_revision", { p_doc: id, p_title: optStr(fd, "title", 300), p_content: parsed.content, p_note: optStr(fd, "note", 300) }),
-  );
+  const baseRaw = Number(str(fd, "base", 9));
+  const base = Number.isInteger(baseRaw) && baseRaw >= 0 ? baseRaw : null;
+  return runAction(detail(id), "Revisi baru disimpan.", async () => {
+    // save_shared_revision (migrasi 0021): penyusun & PPK pada DPP, dengan pengaman bentrok. Belum ada -> fungsi lama (hanya penyusun).
+    const r = await supabase.rpc("save_shared_revision", { p_doc: id, p_title: optStr(fd, "title", 300), p_content: parsed.content, p_note: optStr(fd, "note", 300), p_base_revision: base });
+    if (r.error && (r.error.code === "PGRST202" || /could not find the function/i.test(r.error.message))) {
+      return supabase.rpc("save_document_revision", { p_doc: id, p_title: optStr(fd, "title", 300), p_content: parsed.content, p_note: optStr(fd, "note", 300) });
+    }
+    return r;
+  });
 }
 
 const simple = (rpc: string, perm: string | string[], ok: string, withReason = false) => async (fd: FormData): Promise<void> => {

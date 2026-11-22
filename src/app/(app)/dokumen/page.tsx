@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Download, Plus } from "lucide-react";
+import { Download, Plus, Upload } from "lucide-react";
 import { requireModule } from "@/lib/auth/guard";
 import { userClient } from "@/lib/supabase/server";
 import { usersWithRole } from "@/lib/lookups";
 import { canAuthorDocuments, DOC_TYPES } from "@/lib/documents";
+import { formatRupiah } from "@/lib/format";
+import { RupPicker } from "./rup-picker";
+import { RupImportPanel } from "./rup-import-panel";
 import { DOC_STATUS } from "@/lib/status";
 import { formatDateTimeWIB } from "@/lib/format";
 import { Badge, Card, CardHeader } from "@/components/ui/card";
@@ -24,9 +27,18 @@ export default async function DokumenPage({ searchParams }: { searchParams: Prom
   const status = sp.status && DOC_STATUS[sp.status] ? sp.status : "";
   const sb = await userClient();
   let q = sb.from("procurement_documents").select("id, doc_type, title, status, created_at, budget_item_id").order("created_at", { ascending: false }).limit(500);
-  if (status) q = q.eq("status", status);
+  if (status) q = q.eq("status", status); else q = q.neq("status", "cancelled"); // dokumen "dihapus" (dibatalkan) hanya tampil bila difilter
   const canCreate = canAuthorDocuments(user.permissions);
   const myTypes = Object.entries(DOC_TYPES).filter(([, t]) => t.creatorRoles.some((r) => (user.roles as string[]).includes(r)));
+  const canImportRup = user.permissions.has("master.manage") || user.permissions.has("document.create_ppk");
+  const { data: fyRow } = await sb.from("fiscal_years").select("id").eq("year", context.year).maybeSingle();
+  const [{ count: rupCount }, { data: rupLast }, { data: balRows }] = await Promise.all([
+    fyRow ? sb.from("rup_references").select("id", { count: "exact", head: true }).eq("fiscal_year_id", fyRow.id) : Promise.resolve({ count: 0 }),
+    fyRow ? sb.from("rup_references").select("imported_at").eq("fiscal_year_id", fyRow.id).not("imported_at", "is", null).order("imported_at", { ascending: false }).limit(1) : Promise.resolve({ data: [] as { imported_at: string }[] }),
+    canCreate ? sb.from("v_budget_balance").select("budget_item_id, sisa_anggaran, pending_sp2d").eq("budget_version_id", context.versionId).limit(3000) : Promise.resolve({ data: [] as { budget_item_id: string; sisa_anggaran: number; pending_sp2d: number }[] }),
+  ]);
+  const sisaOf = new Map((balRows ?? []).map((b) => [b.budget_item_id as string, Number(b.sisa_anggaran) - Number(b.pending_sp2d)]));
+  const lastImport = rupLast?.[0]?.imported_at ? new Date(rupLast[0].imported_at as string).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" }) : null;
   const [{ data, error }, { data: items }, ppk, ppbj] = await Promise.all([
     q,
     canCreate ? sb.from("budget_item_versions").select("budget_item_id, budget_items(pptk_id, description, sub_activities(code,name), expenditure_accounts(code))").eq("budget_version_id", context.versionId).limit(1000) : Promise.resolve({ data: [] }),
@@ -51,8 +63,9 @@ export default async function DokumenPage({ searchParams }: { searchParams: Prom
                 <Field label="Jenis dokumen" htmlFor="type"><Select id="type" name="type" required>{myTypes.map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}</Select></Field>
                 <Field label="Butir anggaran" htmlFor="itemId">
                   <Select id="itemId" name="itemId" required defaultValue=""><option value="" disabled>Pilih butir</option>
-                    {mine.map((i) => <option key={i.budget_item_id} value={i.budget_item_id}>{i.budget_items?.sub_activities?.code} · {i.budget_items?.expenditure_accounts?.code}{i.budget_items?.description ? ` · ${i.budget_items.description}` : ""}</option>)}</Select>
+                    {mine.map((i) => <option key={i.budget_item_id} value={i.budget_item_id}>{i.budget_items?.sub_activities?.code} · {i.budget_items?.expenditure_accounts?.code}{i.budget_items?.description ? ` · ${i.budget_items.description}` : ""}{sisaOf.has(i.budget_item_id) ? ` · Sisa tersedia ${formatRupiah(sisaOf.get(i.budget_item_id)!)}` : ""}</option>)}</Select>
                 </Field>
+                <RupPicker mode="create" className="sm:col-span-2" />
                 <Field label="Judul" htmlFor="title" className="sm:col-span-2"><Input id="title" name="title" required maxLength={300} /></Field>
                 <Field label="PPK" htmlFor="ppk"><Select id="ppk" name="ppk" defaultValue=""><option value="">— Belum ditentukan —</option>{ppk.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</Select></Field>
                 <Field label="PPBJ (pereviu)" htmlFor="ppbj"><Select id="ppbj" name="ppbj" defaultValue=""><option value="">— Belum ditentukan —</option>{ppbj.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</Select></Field>
@@ -61,6 +74,15 @@ export default async function DokumenPage({ searchParams }: { searchParams: Prom
                 <div className="sm:col-span-2"><SubmitButton pendingText="Membuat...">Buat draf</SubmitButton></div>
               </form>
             )}
+          </details>
+        </Card>
+      )}
+
+      {(canImportRup || (rupCount ?? 0) > 0) && (
+        <Card>
+          <details open={canImportRup && (rupCount ?? 0) === 0}>
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 text-sm font-semibold text-navy-800 [&::-webkit-details-marker]:hidden"><Upload size={16} aria-hidden /> Data RUP dari SiRUP ({(rupCount ?? 0).toLocaleString("id-ID")} paket) — agar penyusunan dokumen tinggal mencari Kode RUP / nama paket</summary>
+            {canImportRup ? <div className="border-t border-slate-100"><RupImportPanel year={context.year} count={rupCount ?? 0} lastImport={lastImport} /></div> : <p className="border-t border-slate-100 px-5 py-4 text-sm text-slate-600">Data RUP diunggah oleh Admin atau PPK. Saat menyusun dokumen, cari paket berdasarkan Kode RUP atau nama paket.</p>}
           </details>
         </Card>
       )}

@@ -16,6 +16,7 @@ for f in supabase/migrations/*.sql; do echo "-- migrasi: $f"; run "$f"; done
 psql -v ON_ERROR_STOP=1 -q -d "${TEST_DB}" -f supabase/tests/10_rls_authorization_tests.sql
 psql -v ON_ERROR_STOP=1 -q -d "${TEST_DB}" -f supabase/tests/30_workflow_tests.sql
 psql -v ON_ERROR_STOP=1 -q -d "${TEST_DB}" -f supabase/tests/90_penugasan_dokumen_tests.sql
+psql -v ON_ERROR_STOP=1 -q -d "${TEST_DB}" -f supabase/tests/91_penyusunan_bersama_tests.sql
 psql -v ON_ERROR_STOP=1 -q -d "${TEST_DB}" -f supabase/tests/40_dpa_tests.sql
 psql -v ON_ERROR_STOP=1 -q -d "${TEST_DB}" -f supabase/tests/50_supplier_tests.sql
 psql -v ON_ERROR_STOP=1 -q -d "${TEST_DB}" -f supabase/tests/60_realization_tests.sql

@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, Plus, Trash2 } from "lucide-react";
 import { Input, Select } from "@/components/ui/input";
-import { classifyRefUrl, computeTotals, DEFAULT_PPN, lineTotal, parsePpn, REF_KINDS, UNIT_SUGGESTIONS, type DocItem, type RefKind } from "@/lib/document-items";
+import { classifyRefUrl, computeTotals, DEFAULT_PPN, lineTotal, parsePpn, REF_KINDS, UNIT_SUGGESTIONS, type DocItem, type Limit, type RefKind } from "@/lib/document-items";
 import { formatRupiah } from "@/lib/format";
 
 interface Row { nama: string; spesifikasi: string; volume: string; satuan: string; harga: string; refKind: RefKind; refUrl: string; refTanggal: string; refHarga: string; refCatatan: string }
@@ -15,19 +15,28 @@ const n = (v: string) => { const x = Number(String(v).replace(",", ".")); return
  * Editor rincian kebutuhan barang/jasa + referensi harga. Hanya mengirim dua kolom formulir: items_json dan f_ppn_persen.
  * Jumlah/total di sini hanya tampilan; server menghitung ulang dan memvalidasi.
  */
-export function ItemsEditor({ defaultItems, defaultPpn, pagu, legacyHps }: { defaultItems: DocItem[]; defaultPpn: string; pagu: number | null; legacyHps?: string }) {
+export function ItemsEditor({ defaultItems, defaultPpn, limits, rupPagu: rupPaguInit, legacyHps }: { defaultItems: DocItem[]; defaultPpn: string; limits: Limit[]; rupPagu: number | null; legacyHps?: string }) {
   const [rows, setRows] = useState<Row[]>(defaultItems.length ? defaultItems.map(fromItem) : [blank()]);
   const [ppn, setPpn] = useState(defaultPpn || String(DEFAULT_PPN));
+  const [rupPagu, setRupPagu] = useState<number | null>(rupPaguInit);
+  // Pemilih RUP (SiRUP) mengirim pagu RUP terpilih lewat peristiwa jendela.
+  useEffect(() => {
+    const h = (e: Event) => { const v = Number((e as CustomEvent<{ pagu?: number | null }>).detail?.pagu); setRupPagu(Number.isFinite(v) && v > 0 ? v : null); };
+    window.addEventListener("rup-picked", h);
+    return () => window.removeEventListener("rup-picked", h);
+  }, []);
   const set = (i: number, patch: Partial<Row>) => setRows((r) => r.map((x, k) => (k === i ? { ...x, ...patch } : x)));
   const items = useMemo(() => rows.map((r) => ({ jumlah: lineTotal(n(r.volume), n(r.harga)) })), [rows]);
   const totals = computeTotals(items, parsePpn(ppn));
   const json = JSON.stringify(rows);
-  const over = pagu !== null && totals.total > pagu;
+  const all: Limit[] = [...limits, ...(rupPagu ? [{ label: "Pagu RUP (SiRUP)", value: rupPagu }] : [])];
+  const exceeded = all.filter((l) => totals.total > l.value);
 
   return (
     <div className="space-y-4 sm:col-span-2">
       <input type="hidden" name="items_json" value={json} />
       <input type="hidden" name="f_ppn_persen" value={ppn} />
+      <input type="hidden" name="rup_pagu" value={rupPagu ?? ""} />
       {legacyHps && <input type="hidden" name="hps_lama" value={legacyHps} />}
       <datalist id="unit-list">{UNIT_SUGGESTIONS.map((u) => <option key={u} value={u} />)}</datalist>
 
@@ -83,8 +92,8 @@ export function ItemsEditor({ defaultItems, defaultPpn, pagu, legacyHps }: { def
         <div className="flex justify-between"><span className="text-slate-600">Subtotal</span><span className="tabular-nums">{formatRupiah(totals.subtotal)}</span></div>
         <div className="flex items-center justify-between gap-3"><label className="flex items-center gap-2 text-slate-600">PPN (%) <Input className="h-8 w-20" type="number" inputMode="decimal" min="0" max="100" step="any" value={ppn} onChange={(e) => setPpn(e.target.value)} /></label><span className="tabular-nums">{formatRupiah(totals.ppn)}</span></div>
         <div className="flex justify-between border-t border-slate-200 pt-2 font-semibold"><span>Total HPS (termasuk PPN)</span><span className="tabular-nums">{formatRupiah(totals.total)}</span></div>
-        {pagu !== null && <div className={`flex justify-between text-xs ${over ? "text-red-700" : "text-slate-500"}`}><span>Pagu butir anggaran</span><span className="tabular-nums">{formatRupiah(pagu)}</span></div>}
-        {over && <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-800">Total HPS melebihi pagu butir anggaran sebesar {formatRupiah(totals.total - (pagu ?? 0))}. HPS tidak boleh melebihi pagu.</p>}
+        {all.map((l) => <div key={l.label} className={`flex justify-between text-xs ${totals.total > l.value ? "text-red-700" : "text-slate-500"}`}><span>{l.label}</span><span className="tabular-nums">{formatRupiah(l.value)}</span></div>)}
+        {exceeded.map((l) => <p key={l.label} className="rounded bg-red-50 px-2 py-1 text-xs text-red-800">Total HPS melebihi {l.label.toLowerCase()} sebesar {formatRupiah(totals.total - l.value)}. HPS tidak boleh melebihi anggaran yang tersedia.</p>)}
       </div>
     </div>
   );

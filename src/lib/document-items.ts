@@ -100,3 +100,6 @@ export function computeTotals(items: Pick<DocItem, "jumlah">[], ppnPersen: numbe
   const ppn = round2((subtotal * ppnPersen) / 100);
   return { subtotal, ppnPersen, ppn, total: round2(subtotal + ppn) };
 }
+
+/** Batas yang dibandingkan dengan total HPS (pagu butir, sisa anggaran tersedia, pagu RUP, ...). */
+export interface Limit { label: string; value: number }

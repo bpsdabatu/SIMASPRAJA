@@ -8,7 +8,10 @@ import { userClient } from "@/lib/supabase/server";
 import { getOrganizationName, usersWithRole } from "@/lib/lookups";
 import { isUuid } from "@/lib/action-utils";
 import { DOC_TYPES, type DocField } from "@/lib/documents";
-import type { DocItem } from "@/lib/document-items";
+import type { DocItem, Limit } from "@/lib/document-items";
+import { loadItemBalance } from "@/lib/doc-balance";
+import { BalanceCard } from "../balance-card";
+import { RupPicker } from "../rup-picker";
 import { formatRupiah } from "@/lib/format";
 import { ItemsEditor } from "../items-editor";
 import { ItemsView } from "../items-view";
@@ -39,7 +42,7 @@ export default async function DokumenDetail({ params, searchParams }: { params: 
   const { data: doc } = await sb.from("procurement_documents").select("id, doc_type, title, status, cancel_reason, created_by, assigned_ppk_id, assigned_ppbj_id, created_at, budget_item_id").eq("id", id).maybeSingle();
   if (!doc) notFound();
   const [{ data: revs }, { data: reviewsRaw }, { data: events }, org] = await Promise.all([
-    sb.from("document_revisions").select("revision_no, content, change_note, created_at").eq("document_id", id).order("revision_no", { ascending: false }),
+    sb.from("document_revisions").select("revision_no, content, change_note, created_at, created_by").eq("document_id", id).order("revision_no", { ascending: false }),
     sb.from("document_reviews").select("id, outcome, reviewed_at, created_at, review_findings(id, finding, required_correction, is_resolved), review_minutes(minutes_no, issued_at)").eq("document_id", id).order("created_at", { ascending: false }),
     sb.from("workflow_events").select("id, from_status, to_status, reason, occurred_at").eq("entity_type", "procurement_documents").eq("entity_id", id).order("occurred_at"),
     getOrganizationName(sb, user.organizationId),
@@ -48,19 +51,23 @@ export default async function DokumenDetail({ params, searchParams }: { params: 
   const latest = revs?.[0];
   const content = (latest?.content ?? {}) as Record<string, string> & { items?: DocItem[] };
   const docItems: DocItem[] = Array.isArray(content.items) ? content.items : [];
-  const { data: paguRow } = doc.budget_item_id
-    ? await sb.from("budget_item_versions").select("pagu").eq("budget_item_id", doc.budget_item_id).eq("budget_version_id", context.versionId).maybeSingle()
-    : { data: null };
-  const pagu = paguRow ? Number(paguRow.pagu) : null;
+  const balance = doc.budget_item_id ? await loadItemBalance(sb, context.versionId, doc.budget_item_id) : null;
+  const limits: Limit[] = balance ? [{ label: "Sisa anggaran tersedia", value: balance.tersedia }, { label: "Pagu butir anggaran", value: balance.pagu }] : [];
+  const rupPagu = Number(content.rup_pagu) > 0 ? Number(content.rup_pagu) : null;
   const reviews = (reviewsRaw ?? []) as unknown as Review[];
   const openReview = reviews.find((r) => r.outcome === null);
   const st = DOC_STATUS[doc.status] ?? { label: doc.status, tone: "slate" as const };
   const owner = doc.created_by === user.id;
-  const editable = owner && (doc.status === "draft" || doc.status === "returned_for_correction");
+  const open = doc.status === "draft" || doc.status === "returned_for_correction";
+  const editable = owner && open; // penyusun (PPTK): ubah isi, penugasan, ajukan, hapus
   const isReviewer = doc.assigned_ppbj_id === user.id;
   const isPpk = doc.assigned_ppk_id === user.id;
   const P = user.permissions;
-  const assigneeIds = [doc.assigned_ppk_id, doc.assigned_ppbj_id].filter((x): x is string => !!x);
+  // DPP disusun BERSAMA: PPK yang ditugaskan ikut mengubah isi (pengajuan tetap oleh penyusun/PPTK).
+  const coAuthor = doc.doc_type === "dpp" && isPpk && !owner && P.has("document.create_ppk");
+  const contentEditable = (editable || (coAuthor && open));
+  const authorIds = [...new Set((revs ?? []).map((r) => (r as { created_by: string }).created_by).concat([doc.created_by]))];
+  const assigneeIds = [...new Set([doc.assigned_ppk_id, doc.assigned_ppbj_id, ...authorIds].filter((x): x is string => !!x))];
   const [{ data: assigneeRows }, ppkOpts, ppbjOpts] = await Promise.all([
     assigneeIds.length ? sb.from("profiles").select("id, full_name").in("id", assigneeIds) : Promise.resolve({ data: [] as { id: string; full_name: string }[] }),
     editable ? usersWithRole(sb, "ppk") : Promise.resolve([]),
@@ -78,14 +85,20 @@ export default async function DokumenDetail({ params, searchParams }: { params: 
 
       <Card>
         <CardHeader title={`Isi dokumen${latest ? ` — revisi ${latest.revision_no}` : ""}`} description={latest?.change_note ?? undefined} />
-        {editable ? (
+        {doc.doc_type === "dpp" && (
+          <p className="no-print border-b border-slate-100 bg-slate-50 px-5 py-2.5 text-xs text-slate-600">
+            DPP disusun bersama: penyusun (PPTK) <strong>{nameOf(doc.created_by)}</strong> dan PPK <strong>{nameOf(doc.assigned_ppk_id)}</strong>. Keduanya dapat mengubah isi selama draf/dikembalikan; setiap perubahan tercatat sebagai revisi atas nama pengubah. Pengajuan oleh PPTK.
+          </p>
+        )}
+        {contentEditable ? (
           <form action={saveRevisionAction} className="grid gap-4 p-5 sm:grid-cols-2">
-            <input type="hidden" name="docId" value={id} /><input type="hidden" name="type" value={doc.doc_type} />
-            <Field label="Judul" htmlFor="title" className="sm:col-span-2"><Input id="title" name="title" defaultValue={doc.title} maxLength={300} /></Field>
+            <input type="hidden" name="docId" value={id} /><input type="hidden" name="type" value={doc.doc_type} /><input type="hidden" name="base" value={latest?.revision_no ?? 0} />
+            {type?.basis && doc.doc_type === "dpp" && <RupPicker mode="fill" className="sm:col-span-2" />}
+            <Field label="Judul" htmlFor="title" className="sm:col-span-2"><Input id="title" name="title" defaultValue={doc.title} maxLength={300} readOnly={coAuthor} />{coAuthor && <p className="mt-1 text-xs text-slate-500">Judul hanya dapat diubah penyusun.</p>}</Field>
             {type?.basis && <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 sm:col-span-2">Dasar penyusunan: {type.basis} Templat resmi instansi dapat menggantikan susunan ini.</p>}
             {type?.fields.map((f) => {
               if (f.render === "computed") return null;
-              if (f.render === "editor") return (<div key={f.key} className="contents">{f.section && <h3 className="border-b border-slate-200 pb-1 text-sm font-semibold text-navy-800 sm:col-span-2">{f.section}</h3>}<ItemsEditor defaultItems={docItems} defaultPpn={content.ppn_persen ?? ""} pagu={pagu} legacyHps={docItems.length === 0 && content.hps ? content.hps : undefined} /></div>);
+              if (f.render === "editor") return (<div key={f.key} className="contents">{f.section && <h3 className="border-b border-slate-200 pb-1 text-sm font-semibold text-navy-800 sm:col-span-2">{f.section}</h3>}<ItemsEditor defaultItems={docItems} defaultPpn={content.ppn_persen ?? ""} limits={limits} rupPagu={rupPagu} legacyHps={docItems.length === 0 && content.hps ? content.hps : undefined} /></div>);
               return (
                 <div key={f.key} className="contents">
                   {f.section && <h3 className="border-b border-slate-200 pb-1 pt-2 text-sm font-semibold text-navy-800 sm:col-span-2">{f.section}</h3>}
@@ -118,7 +131,7 @@ export default async function DokumenDetail({ params, searchParams }: { params: 
                 );
               })}
             </dl>
-            {type?.hasItems && <div className="border-t border-slate-100"><ItemsView items={docItems} ppnPersen={content.ppn_persen} pagu={pagu} /></div>}
+            {type?.hasItems && <div className="border-t border-slate-100"><ItemsView items={docItems} ppnPersen={content.ppn_persen} limits={[...limits, ...(rupPagu ? [{ label: "Pagu RUP (SiRUP)", value: rupPagu }] : [])]} /></div>}
           </div>
         )}
         {(owner && editable || owner && doc.status === "draft") && (
@@ -127,11 +140,13 @@ export default async function DokumenDetail({ params, searchParams }: { params: 
               <form action={submitDocumentAction}><input type="hidden" name="docId" value={id} /><ConfirmSubmit variant="accent" message="Ajukan dokumen ini untuk reviu? Setelah diajukan isi tidak dapat diubah.">Ajukan</ConfirmSubmit></form>
             )}
             <form action={cancelDocumentAction} className="flex gap-2"><input type="hidden" name="docId" value={id} />
-              <Input name="reason" required maxLength={300} placeholder="Alasan pembatalan" aria-label="Alasan pembatalan" className="h-10 w-60" /><ConfirmSubmit variant="danger" message="Batalkan dokumen ini?">Batalkan</ConfirmSubmit></form>
+              <Input name="reason" required maxLength={300} placeholder="Alasan penghapusan" aria-label="Alasan penghapusan" className="h-10 w-60" /><ConfirmSubmit variant="danger" message="Hapus dokumen ini? Dokumen ditandai Dibatalkan dan tidak muncul lagi pada daftar (riwayat tetap tersimpan untuk audit).">Hapus</ConfirmSubmit></form>
           </div>
         )}
       </Card>
 
+
+      {balance && <BalanceCard b={balance} />}
 
       <Card>
         <CardHeader title="Penugasan" description="PPK dan PPBJ (pereviu) yang menangani dokumen ini. PPBJ wajib ditentukan sebelum diajukan." />
@@ -150,6 +165,20 @@ export default async function DokumenDetail({ params, searchParams }: { params: 
           </dl>
         )}
       </Card>
+
+      {(revs ?? []).length > 1 && (
+        <details className="no-print rounded-xl border border-slate-200 bg-white">
+          <summary className="cursor-pointer px-5 py-3 text-sm font-semibold text-navy-800">Riwayat revisi ({(revs ?? []).length})</summary>
+          <ul className="divide-y divide-slate-100 border-t border-slate-100 text-sm">
+            {(revs ?? []).map((r) => (
+              <li key={r.revision_no} className="flex flex-wrap items-baseline justify-between gap-2 px-5 py-2.5">
+                <span><strong>Revisi {r.revision_no}</strong> · {nameOf((r as { created_by: string }).created_by)}{r.change_note ? ` — ${r.change_note}` : ""}</span>
+                <span className="text-xs text-slate-500">{formatDateTimeWIB(r.created_at)}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
 
       <div className="no-print space-y-6">
         {(isReviewer && ["submitted", "resubmitted"].includes(doc.status) && P.has("document.review")) && (

@@ -1,4 +1,5 @@
 import { computeTotals, parseItems, parsePpn, type DocItem } from "@/lib/document-items";
+import { mapJenisPengadaan, mapMetodePemilihan } from "@/lib/rup-import-core";
 
 export interface DocField {
   key: string; label: string; kind?: "text" | "textarea" | "date" | "select"; required?: boolean;
@@ -85,6 +86,8 @@ export function parseDocContent(fd: FormData, type: string): { content: DocConte
     const ppn = parsePpn(fd.get("f_ppn_persen"));
     const t = computeTotals(r.items, ppn);
     content.items = r.items;
+    const rp = Number(String(fd.get("rup_pagu") ?? "").trim());
+    content.rup_pagu = Number.isFinite(rp) && rp > 0 && rp < 1e13 ? String(rp) : "";
     content.ppn_persen = String(ppn);
     content.subtotal = String(t.subtotal);
     content.ppn = String(t.ppn);
@@ -100,3 +103,19 @@ export const contentFrom = (fd: FormData, type: string): DocContent => parseDocC
 /** Izin penyusun dokumen yang benar-benar ada di database (pemilik dokumen & RLS menjadi penentu akhir). */
 export const DOC_AUTHOR_PERMISSIONS = ["document.create_pptk", "document.create_ppk"] as const;
 export const canAuthorDocuments = (permissions: ReadonlySet<string>) => DOC_AUTHOR_PERMISSIONS.some((p) => permissions.has(p));
+
+export interface RupSource {
+  rup_code: string; package_name: string | null; pagu: number | string | null; jenis_pengadaan: string | null; metode_pemilihan: string | null;
+  cara_pengadaan: string | null; sumber_dana: string | null; lokasi: string | null;
+}
+/** Isi awal DPP dari data RUP (SiRUP). Nilai yang tak dikenali dikosongkan (tidak ditebak); pengguna memeriksa dan menyesuaikan. */
+export function contentFromRup(r: RupSource): DocContent {
+  const swakelola = /swakelola/i.test(r.cara_pengadaan ?? "") || /swakelola/i.test(r.metode_pemilihan ?? "");
+  const pagu = Number(r.pagu);
+  return {
+    kode_rup: r.rup_code, perihal: r.package_name ?? "",
+    jenis_pengadaan: mapJenisPengadaan(r.jenis_pengadaan ?? ""), metode_pemilihan: mapMetodePemilihan(r.metode_pemilihan ?? ""),
+    cara_pengadaan: swakelola ? "Swakelola" : "Melalui Penyedia",
+    sumber_dana: r.sumber_dana ?? "", lokasi: r.lokasi ?? "", rup_pagu: Number.isFinite(pagu) && pagu > 0 ? String(pagu) : "",
+  };
+}
